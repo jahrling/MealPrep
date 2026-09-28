@@ -1,3 +1,4 @@
 .env
 mealplan.db
 __pycache__/
+plans
