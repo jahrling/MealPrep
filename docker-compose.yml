@@ -10,8 +10,11 @@ services:
     restart: unless-stopped
     ports:
       - "8002:8002"
+    # One shared secrets file, so the key is the same no matter whose checkout
+    # rebuilds. Holds ANTHROPIC_API_KEY. Override the path with
+    # DINNERTABLE_ENV_FILE. Without the file the app still runs, minus AI.
     env_file:
-      - path: .env          # optional; holds ANTHROPIC_API_KEY
+      - path: ${DINNERTABLE_ENV_FILE:-/etc/dinnertable.env}
         required: false
     volumes:
       - dinnertable-data:/data
