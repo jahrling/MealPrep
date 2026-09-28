@@ -7,6 +7,7 @@ No third-party dependencies -- stdlib only.
 
 Config via environment variables, or a .env file next to this script:
   PORT               port to listen on (default 8002)
+  DB_PATH            SQLite file location (default mealplan.db next to this script)
   ANTHROPIC_API_KEY  enables the AI features (recipe ideas, week planning,
                       fridge photo scanning). Without it, those buttons show
                       a message instead of erroring.
@@ -26,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, 'mealplan.db')
+DB_PATH = os.environ.get('DB_PATH') or os.path.join(BASE_DIR, 'mealplan.db')
 HTML_PATH = os.path.join(BASE_DIR, 'dinnertable.html')
 ENV_PATH = os.path.join(BASE_DIR, '.env')
 

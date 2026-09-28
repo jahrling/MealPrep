@@ -1,0 +1,8 @@
+.git
+.env
+mealplan.db
+__pycache__
+Temp
+research
+dropbox
+plans

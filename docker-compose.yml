@@ -1,0 +1,21 @@
+# Same project name and volume no matter who runs it or from which checkout,
+# so `docker compose up -d --build` from anyone's clone replaces the one
+# running container and keeps the same data.
+name: dinnertable
+
+services:
+  dinnertable:
+    build: .
+    container_name: dinnertable
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    env_file:
+      - path: .env          # optional; holds ANTHROPIC_API_KEY
+        required: false
+    volumes:
+      - dinnertable-data:/data
+
+volumes:
+  dinnertable-data:
+    name: dinnertable-data
