@@ -29,6 +29,17 @@ from urllib.parse import parse_qs, unquote, urlparse
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get('DB_PATH') or os.path.join(BASE_DIR, 'mealplan.db')
 HTML_PATH = os.path.join(BASE_DIR, 'dinnertable.html')
+STATIC_DIR = os.path.join(BASE_DIR, 'static')
+# URL path -> (file in static/, content type). Icons and the web-app manifest.
+STATIC_FILES = {
+    '/manifest.webmanifest': ('manifest.webmanifest', 'application/manifest+json'),
+    '/icon.svg': ('icon.svg', 'image/svg+xml'),
+    '/icon-192.png': ('icon-192.png', 'image/png'),
+    '/icon-512.png': ('icon-512.png', 'image/png'),
+    '/icon-maskable-512.png': ('icon-maskable-512.png', 'image/png'),
+    '/apple-touch-icon.png': ('apple-touch-icon.png', 'image/png'),
+    '/favicon-32.png': ('favicon-32.png', 'image/png'),
+}
 ENV_PATH = os.path.join(BASE_DIR, '.env')
 
 
@@ -177,6 +188,8 @@ class Handler(BaseHTTPRequestHandler):
         qs = parse_qs(parsed.query)
         if parsed.path in ('/', '/dinnertable.html'):
             self._serve_html()
+        elif parsed.path in STATIC_FILES:
+            self._serve_static(*STATIC_FILES[parsed.path])
         elif parsed.path == '/api/doc':
             self._send_json(doc_get(unquote(qs.get('path', [''])[0])))
         elif parsed.path == '/api/collection':
@@ -225,6 +238,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_static(self, filename, content_type):
+        try:
+            with open(os.path.join(STATIC_DIR, filename), 'rb') as f:
+                body = f.read()
+        except OSError:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'public, max-age=3600')
         self.end_headers()
         self.wfile.write(body)
 
