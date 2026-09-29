@@ -75,6 +75,11 @@ h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0;letter-spacing:-.
 .days{display:flex;flex-direction:column;gap:8px}
 .day{display:grid;grid-template-columns:54px 1fr;gap:12px;align-items:stretch;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:10px;text-align:left;width:100%}
 .day.today{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.day.sel,.rcard.sel{border-color:var(--gold);box-shadow:0 0 0 2px var(--gold)}
+.day.target{border-style:dashed}
+.lineup-hint{background:var(--gold-soft);border-radius:12px;padding:10px 12px;font-size:13.5px;margin-bottom:10px}
+.bench h3{margin-bottom:8px}
+.chip.pulled{background:var(--gold-soft);color:var(--gold)}
 .dstamp{display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--surface-2);border-radius:11px;padding-block:6px}
 .dstamp .dn{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2)}
 .dstamp .dd{font-family:var(--display);font-size:22px;font-weight:800;line-height:1.05}
@@ -314,10 +319,10 @@ const ver=(r,mode)=>(r&&(r[mode]&&r[mode].ingredients.length?r[mode]:r.shortcut)
 
 /* ---------- state ---------- */
 const S={tab:'week',weekKey:weekKeyOf(new Date()),recipes:{},recipesLoaded:false,
-  plan:{days:{},notes:''},shop:{have:{},got:{},extras:[]},pantry:{items:[]},inv:{items:[]},settings:{servings:4},
+  plan:{days:{},notes:'',archive:[]},shop:{have:{},got:{},extras:[]},pantry:{items:[]},inv:{items:[]},settings:{servings:4},
   scan:{files:[],urls:[],found:null,busy:false,msg:''},imgLimit:null,
   shopView:'list',rq:'',rfilter:'all',sheet:null,db:null,sample:null,dbState:'loading',readOnly:false,
-  ai:{busy:null,msg:'',results:[],newOK:true,fridge:'',create:''},deferred:false};
+  ai:{busy:null,msg:'',results:[],newOK:true,fridge:'',create:''},deferred:false,lineup:{on:false,sel:null,q:''}};
 let ctl=null,unsubPlan=null,unsubShop=null;
 
 /* ---------- saving ---------- */
@@ -340,16 +345,16 @@ function writeErr(e){
   else if(e&&e.code==='quota_exceeded'){toast('Storage is full. Delete a few recipes to make room.')}
   else toast("That change didn't save. Try again in a moment.");
 }
-const savePlan=()=>save('plans/'+S.weekKey,S.plan);
+const savePlan=()=>{const inPlan=new Set(Object.values(S.plan.days).map(e=>e&&e.recipeId).filter(Boolean));S.plan.archive=(S.plan.archive||[]).filter(a=>!inPlan.has(a.recipeId));save('plans/'+S.weekKey,S.plan)};
 const saveShop=()=>save('shop/'+S.weekKey,S.shop);
 
 /* ---------- data ---------- */
 function subWeek(){
   if(unsubPlan)unsubPlan();if(unsubShop)unsubShop();
-  S.plan={days:{},notes:''};S.shop={have:{},got:{},extras:[]};
+  S.plan={days:{},notes:'',archive:[]};S.shop={have:{},got:{},extras:[]};
   if(!S.db)return;
   const pk='plans/'+S.weekKey,sk='shop/'+S.weekKey;
-  unsubPlan=S.db.doc(pk).onSnapshot(s=>{if(busy(pk))return;const d=s.exists?s.data():null;S.plan={days:clone((d&&d.days)||{}),notes:String((d&&d.notes)||'')};render()},onErr);
+  unsubPlan=S.db.doc(pk).onSnapshot(s=>{if(busy(pk))return;const d=s.exists?s.data():null;S.plan={days:clone((d&&d.days)||{}),notes:String((d&&d.notes)||''),archive:clone((d&&d.archive)||[])};render()},onErr);
   unsubShop=S.db.doc(sk).onSnapshot(s=>{if(busy(sk))return;const d=s.exists?s.data():null;S.shop={have:clone((d&&d.have)||{}),got:clone((d&&d.got)||{}),extras:clone((d&&d.extras)||[])};render()},onErr);
 }
 function onErr(e){if(e&&e.code==='revoked'){S.dbState='off';render(true)}}
@@ -407,8 +412,42 @@ function render(force){
   renderSheet();
 }
 
+/* ---------- LINEUP (bench / sub / archive) ---------- */
+function benchList(){
+  const playIds=new Set(Object.values(S.plan.days).map(e=>e&&e.recipeId).filter(Boolean));
+  const q=norm(S.lineup.q);
+  const rank=id=>{const r=S.recipes[id];return ratingAvg(r)};
+  const pulled=(S.plan.archive||[]).map(a=>a.recipeId).filter(id=>S.recipes[id]&&!playIds.has(id));
+  const rest=Object.keys(S.recipes).filter(id=>!playIds.has(id)&&!pulled.includes(id)).sort((a,b)=>rank(b)-rank(a)||S.recipes[a].name.localeCompare(S.recipes[b].name));
+  return pulled.concat(rest).filter(id=>!q||norm(S.recipes[id].name+' '+S.recipes[id].protein).includes(q)).map(id=>[id,S.recipes[id],pulled.includes(id)]);
+}
+const SPECIALS={leftovers:'Leftovers night',out:'Eating out'};
+function benchHTML(){
+  const sel=S.lineup.sel,list=benchList();
+  const specials=`<div class="btnrow">${Object.entries(SPECIALS).map(([k,l])=>`<button class="btn grow${sel&&sel.kind==='special'&&sel.v===k?' primary':''}" data-a="lspecial" data-v="${k}">${l}</button>`).join('')}</div>`;
+  return specials+(list.length?list.map(([id,r,pulled])=>{const n=ratingCount(r);return `<button class="rcard${sel&&sel.kind==='bench'&&sel.id===id?' sel':''}" data-a="lbench" data-id="${esc(id)}"><div class="row"><span class="rn grow">${esc(r.name)}</span>${n?`<span class="votes num">★${ratingAvg(r).toFixed(1)} (${n})</span>`:''}</div><div class="chips">${pulled?'<span class="chip pulled">Pulled this week</span>':''}<span class="chip scratch num">${I.leaf}${r.scratch.time} min</span><span class="chip shortcut num">${I.bolt}${r.shortcut.time} min</span></div></button>`}).join(''):'<p class="muted" style="margin:0">Nobody left on the bench. Save more recipes from the Ideas tab.</p>');
+}
+function lineupPanel(){
+  const sel=S.lineup.sel;
+  const slotRecipe=sel&&sel.kind==='slot'&&S.plan.days[sel.day]&&S.plan.days[sel.day].recipeId;
+  const hint=!sel?'Tap a dinner to pick it up, then tap another night to swap places, or tap a bench recipe to sub it in.'
+    :sel.kind==='slot'?`${DAYS_LONG[sel.day]} is picked up. Tap another night to move it, a bench recipe to sub it in, or archive it out of this week.`
+    :`${esc(sel.kind==='special'?SPECIALS[sel.v]:S.recipes[sel.id]?S.recipes[sel.id].name:'Recipe')} is ready. Tap the night it should play.`;
+  let h=`<div class="lineup-hint">${hint}</div>`;
+  h+=`<div class="btnrow" style="margin-bottom:12px">${sel&&sel.kind==='slot'?`<button class="btn danger grow" data-a="larchive">Archive from this week</button>`:''}<button class="btn primary grow" data-a="lineup">Done</button></div>`;
+  h+=`<section class="section bench"><h3>Bench</h3><input type="search" id="bq" data-bind="bq" placeholder="Search the bench" value="${esc(S.lineup.q)}" aria-label="Search the bench"><div class="rlist" id="blist" style="margin-top:8px">${benchHTML()}</div></section>`;
+  return h;
+}
+function lineupPlace(day,recipeId,mode,servings){
+  const old=S.plan.days[day],arch=(S.plan.archive||[]).find(a=>a.recipeId===recipeId);
+  S.plan.days[day]={recipeId,mode:mode||(arch&&arch.mode)||defaultMode(day),servings:servings||null};
+  S.plan.archive=(S.plan.archive||[]).filter(a=>a.recipeId!==recipeId);
+  return old;
+}
+
 /* ---------- WEEK ---------- */
 function viewWeek(){
+  const ls=S.lineup.sel;if(ls&&ls.kind==='slot'&&!S.plan.days[ls.day])S.lineup.sel=null;else if(ls&&ls.kind==='bench'&&!S.recipes[ls.id])S.lineup.sel=null;
   const today=ymd(new Date());
   const ents=plannedEntries();
   const meals=ents.filter(([, ,r])=>r);
@@ -429,12 +468,14 @@ function viewWeek(){
     else{const r=S.recipes[e.recipeId];
       body=r?`<div class="dname">${esc(r.name)}</div><div class="chips">${modeChip(e.mode)}<span class="chip num">${ver(r,e.mode).time} min</span>${e.servings&&e.servings!==S.settings.servings?`<span class="chip num">Serves ${e.servings}</span>`:''}${newChip(r)}</div>${vp(r)}`
         :'<div class="dname muted">Recipe was deleted</div><div class="dadd" style="font-size:13px">Tap to choose another</div>';}
-    const act=!e||(e.recipeId&&!S.recipes[e.recipeId])?`data-a="pick" data-day="${d}"`:e.type?`data-a="pick" data-day="${d}"`:`data-a="openday" data-day="${d}"`;
-    h+=`<button class="day${isT?' today':''}" ${act} aria-label="${DAYS_LONG[d]}">${stamp}<div class="dbody">${body}</div></button>`;
+    const LU=S.lineup.on,selSlot=LU&&S.lineup.sel&&S.lineup.sel.kind==='slot'&&S.lineup.sel.day===d;
+    const act=LU?`data-a="lslot" data-day="${d}"`:!e||(e.recipeId&&!S.recipes[e.recipeId])?`data-a="pick" data-day="${d}"`:e.type?`data-a="pick" data-day="${d}"`:`data-a="openday" data-day="${d}"`;
+    h+=`<button class="day${isT?' today':''}${selSlot?' sel':''}${LU&&S.lineup.sel&&!selSlot?' target':''}" ${act} aria-label="${DAYS_LONG[d]}"${LU?` aria-pressed="${selSlot}"`:''}>${stamp}<div class="dbody">${body}</div></button>`;
   }
   h+='</div>';
+  if(S.lineup.on)return h+lineupPanel();
   const open=7-ents.length;
-  h+=`<div class="btnrow" style="margin-top:12px"><button class="btn primary grow" data-a="goplan" ${open?'':'disabled'}>${I.spark} ${open?`Fill ${open} open night${open===1?'':'s'} with AI`:'Week is full'}</button>${ents.length?'<button class="btn ghost" data-a="clearweek">Clear week</button>':''}</div>`;
+  h+=`<div class="btnrow" style="margin-top:12px"><button class="btn primary grow" data-a="goplan" ${open?'':'disabled'}>${I.spark} ${open?`Fill ${open} open night${open===1?'':'s'} with AI`:'Week is full'}</button><button class="btn" data-a="lineup">Set lineup</button>${ents.length?'<button class="btn ghost" data-a="clearweek">Clear week</button>':''}</div>`;
   if(S.confirmClear)h+=`<div class="confirm" style="margin-top:8px"><span class="grow">Remove every dinner from this week?</span><button class="btn small danger" data-a="clearyes">Clear it</button><button class="btn small" data-a="clearno">Keep</button></div>`;
   const prep=meals.filter(([, ,r])=>r.prepAhead);
   h+=`<section class="section"><h3>Sunday prep</h3>`;
@@ -590,7 +631,7 @@ function renderSheet(){
     const adjBusy=S.ai.busy==='adjust';
     body+=`<div><div class="eyebrow" style="margin-bottom:6px">Cooking notes</div><p class="muted" style="margin:0 0 8px;font-size:13px">What would you change next time? Claude updates the recipe itself and logs your note. This is separate from the ratings above.</p><textarea id="adjnote" data-bind="adj" placeholder="Too salty, needed 10 more minutes in the oven, the boys wanted less spice…">${esc(sh.adj||'')}</textarea><button class="btn primary small" style="margin-top:8px" data-a="adjust" ${S.ai.busy||!S.sample?'disabled':''}>Adjust recipe with this note</button>${adjBusy?`<div class="status" style="margin-top:8px">${dots}<span class="grow">${esc(S.ai.msg)}</span><button class="btn small" data-a="stop">Stop</button></div>`:(S.ai.lastKey==='adjust'&&S.ai.msg?`<div class="status" style="margin-top:8px">${esc(S.ai.msg)}</div>`:'')}${r.adjustments.length?`<div class="stack" style="margin-top:10px">${r.adjustments.slice().reverse().map((a,i)=>`<div class="note"><span class="eyebrow">${esc(adjDate(a.at))}</span>${esc(a.note)}${a.summary?`<div class="muted" style="margin-top:4px">Changed: ${esc(a.summary)}</div>`:''}${i===0&&a.prev?`<button class="btn ghost small" style="margin-top:6px" data-a="adjundo" ${S.ai.busy?'disabled':''}>Undo this change</button>`:''}</div>`).join('')}</div>`:''}</div>`;
     body+=`<div><div class="eyebrow" style="margin-bottom:6px">Remix with AI</div><div class="btnrow">${[['faster','Make it faster'],['veg','Sneak in more veggies'],['kid','More kid-friendly'],['flavor','New flavor twist']].map(([k,l])=>`<button class="btn small" data-a="remix" data-v="${k}" ${S.ai.busy||!S.sample?'disabled':''}>${l}</button>`).join('')}</div>${S.ai.busy==='remix'?`<div class="status" style="margin-top:8px">${dots}<span class="grow">${esc(S.ai.msg)}</span><button class="btn small" data-a="stop">Stop</button></div>`:(S.ai.lastKey==='remix'&&S.ai.msg?`<div class="status" style="margin-top:8px">${esc(S.ai.msg)}</div>`:'')}</div>`;
-    if(e)body+=`<div class="btnrow"><button class="btn grow" data-a="swap">Swap dinner</button><button class="btn danger grow" data-a="rmday">Remove from ${DAYS[sh.day]}</button></div>`;
+    if(e)body+=`<div class="btnrow"><button class="btn grow" data-a="swap">Swap dinner</button><button class="btn grow" data-a="tolineup">Move or archive</button></div>`;
     else body+=`<div><div class="eyebrow" style="margin-bottom:6px">Add to this week</div>${dayPickHTML('addday')}</div>`;
     body+=sh.confirmDel?`<div class="confirm"><span class="grow">Delete this recipe for good?</span><button class="btn small danger" data-a="delyes">Delete</button><button class="btn small" data-a="delno">Keep</button></div>`:`<button class="btn ghost danger small" data-a="del">Delete recipe</button>`;
   }else if(sh.type==='preview'){
@@ -718,8 +759,8 @@ function clearPhotos(){S.scan.urls.forEach(u=>{try{URL.revokeObjectURL(u)}catch(
 
 /* ---------- actions ---------- */
 const A={
-  tab:t=>{S.tab=t.dataset.v;S.sheet=null;window.scrollTo(0,0);render(true)},
-  wk:t=>{S.weekKey=shiftWeek(S.weekKey,Number(t.dataset.v));S.confirmClear=false;subWeek();render(true)},
+  tab:t=>{S.tab=t.dataset.v;S.sheet=null;S.lineup={on:false,sel:null,q:''};window.scrollTo(0,0);render(true)},
+  wk:t=>{S.weekKey=shiftWeek(S.weekKey,Number(t.dataset.v));S.confirmClear=false;S.lineup.sel=null;subWeek();render(true)},
   fam:t=>{S.settings.servings=Math.max(1,Math.min(12,S.settings.servings+Number(t.dataset.v)));save('settings/family',S.settings);render(true)},
   pick:t=>{const d=Number(t.dataset.day);const e=S.plan.days[d];S.sheet={type:'pick',day:d,mode:(e&&e.mode)||defaultMode(d),q:''};render(true)},
   openday:t=>{const d=Number(t.dataset.day);S.ai.msg='';S.sheet={type:'recipe',id:S.plan.days[d].recipeId,day:d};render(true)},
@@ -729,6 +770,28 @@ const A={
   pmode:t=>{S.sheet.mode=t.dataset.v;render(true)},
   choose:t=>{const d=S.sheet.day;S.plan.days[d]={recipeId:t.dataset.id,mode:S.sheet.mode,servings:null};savePlan();S.sheet=null;render(true);toast(`Added to ${DAYS_LONG[d]}`)},
   special:t=>{const d=S.sheet.day;S.plan.days[d]={type:t.dataset.v};savePlan();S.sheet=null;render(true)},
+  lineup:()=>{S.lineup={on:!S.lineup.on,sel:null,q:''};render(true)},
+  tolineup:()=>{const d=S.sheet.day;S.sheet=null;S.tab='week';S.lineup={on:true,sel:{kind:'slot',day:d},q:''};render(true)},
+  lslot:t=>{const d=Number(t.dataset.day),L=S.lineup,sel=L.sel,e=S.plan.days[d];
+    if(!sel){if(e)L.sel={kind:'slot',day:d}}
+    else if(sel.kind==='slot'){
+      if(!S.plan.days[sel.day]){L.sel=null;return render(true)}
+      if(sel.day!==d){const from=S.plan.days[sel.day];if(e)S.plan.days[sel.day]=e;else delete S.plan.days[sel.day];S.plan.days[d]=from;savePlan();toast(`Moved to ${DAYS_LONG[d]}`)}
+      L.sel=null}
+    else if(sel.kind==='special'){S.plan.days[d]={type:sel.v};savePlan();toast(`${SPECIALS[sel.v]} on ${DAYS_LONG[d]}`);L.sel=null}
+    else{const r=S.recipes[sel.id];if(r){lineupPlace(d,sel.id,e&&e.recipeId&&e.mode,e&&e.recipeId&&e.servings);savePlan();toast(`${r.name} is in for ${DAYS_LONG[d]}`)}L.sel=null}
+    render(true)},
+  lbench:t=>{const id=t.dataset.id,L=S.lineup,sel=L.sel,r=S.recipes[id];if(!r)return;
+    if(sel&&sel.kind==='slot'){const old=S.plan.days[sel.day];lineupPlace(sel.day,id,old&&old.mode,old&&old.servings);savePlan();toast(`${r.name} subbed in for ${DAYS_LONG[sel.day]}`);L.sel=null}
+    else L.sel=sel&&sel.kind==='bench'&&sel.id===id?null:{kind:'bench',id};
+    render(true)},
+  lspecial:t=>{const v=t.dataset.v,L=S.lineup,sel=L.sel;
+    if(sel&&sel.kind==='slot'){S.plan.days[sel.day]={type:v};savePlan();toast(`${SPECIALS[v]} on ${DAYS_LONG[sel.day]}`);L.sel=null}
+    else L.sel=sel&&sel.kind==='special'&&sel.v===v?null:{kind:'special',v};
+    render(true)},
+  larchive:()=>{const L=S.lineup,sel=L.sel;if(!sel||sel.kind!=='slot')return;const e=S.plan.days[sel.day];if(!e)return;
+    if(e.recipeId)S.plan.archive=(S.plan.archive||[]).filter(a=>a.recipeId!==e.recipeId).concat([{recipeId:e.recipeId,mode:e.mode||'shortcut'}]);
+    delete S.plan.days[sel.day];savePlan();L.sel=null;render(true);toast('Archived from this week')},
   rmday:()=>{const d=S.sheet.day;delete S.plan.days[d];savePlan();S.sheet=null;render(true);toast(`${DAYS_LONG[d]} cleared`)},
   swap:()=>{const d=S.sheet.day;S.sheet={type:'pick',day:d,mode:S.plan.days[d].mode||defaultMode(d),q:''};render(true)},
   smode:t=>{const sh=S.sheet;if(sh.type==='recipe'&&sh.day!=null){S.plan.days[sh.day].mode=t.dataset.v;savePlan()}else sh.mode=t.dataset.v;render(true)},
@@ -834,6 +897,7 @@ document.addEventListener('input',ev=>{
   if(b==='notes'){S.plan.notes=t.value;clearTimeout(notesTimer);notesTimer=setTimeout(savePlan,600)}
   else if(b==='rq'){S.rq=t.value;const l=$('#rlist');if(l)l.innerHTML=recipeListHTML(filteredRecipes(),'openrec')}
   else if(b==='pq'){S.sheet.q=t.value;const l=$('#plist');if(l)l.innerHTML=recipeListHTML(pickList(),'choose')}
+  else if(b==='bq'){S.lineup.q=t.value;const l=$('#blist');if(l)l.innerHTML=benchHTML()}
   else if(b==='adj'){if(S.sheet)S.sheet.adj=t.value}
   else if(b==='ai.fridge')S.ai.fridge=t.value;
   else if(b==='ai.create')S.ai.create=t.value;
