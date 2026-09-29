@@ -127,6 +127,9 @@ textarea{resize:vertical;min-height:70px}
 .seg button.on{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08)}
 .seg.three{grid-template-columns:repeat(3,1fr)}
 .seg.three button{font-size:13px;padding:8px 4px}
+.qcard{display:flex;gap:10px;align-items:flex-start;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px}
+.qcard>img{width:64px;height:64px;object-fit:cover;border-radius:8px;flex:none;background:var(--surface-2)}
+.qbody{flex:1;min-width:0;display:grid;gap:6px}
 .thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:6px}
 .thumbs div{position:relative;aspect-ratio:1;max-width:100%;border-radius:10px;overflow:hidden;background:var(--surface-2)}
 .thumbs img{width:100%;height:100%;object-fit:cover;display:block}
@@ -316,7 +319,7 @@ const ver=(r,mode)=>(r&&(r[mode]&&r[mode].ingredients.length?r[mode]:r.shortcut)
 /* ---------- state ---------- */
 const S={tab:'week',weekKey:weekKeyOf(new Date()),recipes:{},recipesLoaded:false,
   plan:{days:{},notes:''},shop:{have:{},got:{},extras:[]},pantry:{items:[]},inv:{items:[]},settings:{servings:4},
-  scan:{mode:'pkg',found:null,busy:false,msg:'',loc:LOCATIONS[0],shelf:''},imgLimit:null,
+  scan:{mode:'pkg',dateFor:null,queue:[],jobs:[],working:false,seq:0,loc:LOCATIONS[0],shelf:''},imgLimit:null,
   shopView:'list',rq:'',rfilter:'all',sheet:null,db:null,sample:null,dbState:'loading',readOnly:false,
   ai:{busy:null,msg:'',results:[],newOK:true,fridge:'',create:''},deferred:false};
 let ctl=null,unsubPlan=null,unsubShop=null;
@@ -497,18 +500,27 @@ function viewShop(){
   if(have.length)h+=`<details class="have"${S.haveOpen?' open':''}><summary data-a="haveopen">Already have (${have.length})</summary><div class="items">${have.map(i=>`<div class="item"><div class="grow"><div class="iname">${esc(i.name)}</div><div class="imeta">${!(i.key in S.shop.have)&&atHome(i.name)?atHome(i.name):'Marked as home'}${i.qty?' · '+esc(i.qty):''}</div></div><button class="pill" data-a="have" data-k="${esc(i.key)}" data-v="0">Need it</button></div>`).join('')}</div></details>`;
   return h;
 }
+function qHTML(e){
+  const img=`<img src="${e.url}" alt="Photo">`,x=`<button class="btn ghost small" data-a="qdel" data-id="${e.id}" aria-label="Remove">×</button>`;
+  const where=esc([e.loc,e.shelf].filter(Boolean).join(' · '));
+  let b;
+  if(e.status==='busy')b=`<div class="status" style="margin:0">${dots}<span class="grow">Reading… ${where}</span></div>`;
+  else if(e.status==='error')b=`<div class="muted">${esc(e.msg)}</div><div class="btnrow"><button class="btn small" data-a="qretry" data-id="${e.id}">Try again</button></div>`;
+  else b=`<input type="text" data-bind="q:${e.id}:name" value="${esc(e.name)}" placeholder="Item name" aria-label="Item name"><div class="addrow2" style="grid-template-columns:1fr 1fr 1fr"><input type="text" data-bind="q:${e.id}:qty" value="${esc(e.qty)}" placeholder="Amount" aria-label="Amount"><input type="date" data-bind="q:${e.id}:purchased" value="${esc(e.purchased)}" aria-label="Purchase date" title="Bought"><input type="date" data-bind="q:${e.id}:expires" value="${esc(e.expires)}" aria-label="Expiration date" title="Expires"></div><div class="muted" style="font-size:12.5px">${where}${where?' · ':''}${e.dateBusy?'Reading date…':e.expAuto?`Expiry is a guess (${DEFAULT_SHELF_DAYS} days)`:'Expiry set'}${e.dateMsg?' · '+esc(e.dateMsg):''}</div><div class="btnrow"><button class="btn primary grow" data-a="qadd" data-id="${e.id}">Add</button><button class="btn grow" data-a="qdate" data-id="${e.id}" ${e.dateBusy?'disabled':''}>Snap exp date</button></div>`;
+  return `<div class="qcard" id="q-${e.id}">${img}<div class="qbody">${b}</div>${x}</div>`;
+}
+function qAllHTML(){
+  const n=S.scan.queue.filter(e=>e.status==='ready').length;
+  return n>1?`<button class="btn primary" style="width:100%" data-a="qaddall">Add all ${n}</button>`:'';
+}
+function qRefresh(e){const el=$('#q-'+e.id);if(el)el.outerHTML=qHTML(e);const a=$('#qall');if(a)a.innerHTML=qAllHTML()}
 function viewOnHand(){
-  const sc=S.scan,f=sc.found;
+  const sc=S.scan;
   let h='';
-  h+=`<div class="scan"><h3>Add an item</h3>`;
-  h+=`<div class="addrow2"><select data-bind="scan.loc" aria-label="Where this item lives">${LOCATIONS.map(l=>`<option${l===sc.loc?' selected':''}>${l}</option>`).join('')}</select><input type="text" data-bind="scan.shelf" value="${esc(sc.shelf)}" placeholder="Shelf (e.g. top shelf, door)" aria-label="Shelf or spot" style="grid-column:span 2"></div>`;
-  if(!f&&!sc.busy)h+=`<div class="btnrow"><button class="btn primary grow" data-a="phcam">${I.spark} Snap item</button><button class="btn" data-a="phlib">From photos</button></div><p class="muted" style="font-size:13px">Bought today, expires in ${DEFAULT_SHELF_DAYS} days unless you snap the date.</p>`;
-  if(sc.busy)h+=`<div class="status">${dots}<span class="grow">${esc(sc.msg)}</span><button class="btn small" data-a="stop">Stop</button></div>`;
-  else if(sc.msg)h+=`<div class="status">${esc(sc.msg)}</div>`;
-  if(f&&!sc.busy){
-    h+=`<div class="section" style="margin:0"><div style="display:grid;gap:8px"><input type="text" data-bind="f.name" value="${esc(f.name)}" placeholder="Item name" aria-label="Item name"><div class="addrow2" style="grid-template-columns:1fr 1fr 1fr"><input type="text" data-bind="f.qty" value="${esc(f.qty)}" placeholder="Amount" aria-label="Amount"><input type="date" data-bind="f.purchased" value="${esc(f.purchased)}" aria-label="Purchase date" title="Bought"><input type="date" data-bind="f.expires" value="${esc(f.expires)}" aria-label="Expiration date" title="Expires"></div><div class="muted" style="font-size:13px">${f.expAuto?`Expires date is a guess (${DEFAULT_SHELF_DAYS} days after purchase).`:'Expiration date set.'}</div></div>
-    <div class="btnrow" style="margin-top:10px"><button class="btn primary grow" data-a="fsave" data-next="1">Add &amp; next</button><button class="btn grow" data-a="phdate">Snap exp date</button><button class="btn ghost" data-a="fsave">Add</button><button class="btn ghost" data-a="fdiscard" aria-label="Discard">×</button></div></div>`;
-  }
+  h+=`<div class="scan"><h3>Add items</h3>`;
+  h+=`<div id="scanq" style="display:grid;gap:8px">${sc.queue.map(qHTML).join('')}</div><div id="qall">${qAllHTML()}</div>`;
+  h+=`<div class="addrow2"><select data-bind="scan.loc" aria-label="Where these items live">${LOCATIONS.map(l=>`<option${l===sc.loc?' selected':''}>${l}</option>`).join('')}</select><input type="text" data-bind="scan.shelf" value="${esc(sc.shelf)}" placeholder="Shelf (e.g. top shelf, door)" aria-label="Shelf or spot" style="grid-column:span 2"></div>`;
+  h+=`<div class="btnrow"><button class="btn primary grow" data-a="phcam">${I.spark} Snap item</button><button class="btn" data-a="phlib">From photos</button></div><p class="muted" style="font-size:13px">Keep snapping: photos are read in the background. Bought today, expires in ${DEFAULT_SHELF_DAYS} days unless a date is read.</p>`;
   h+='</div>';
   h+=`<section class="section"><div class="row" style="margin-bottom:8px"><h3 class="grow" style="margin:0">On hand now</h3>${S.inv.items.length?`<button class="btn small ghost" data-a="invclear">Clear all</button>`:''}</div>`;
   if(S.confirmInvClear)h+=`<div class="confirm" style="margin-bottom:8px"><span class="grow">Empty the whole On hand list?</span><button class="btn small danger" data-a="invclearyes">Clear it</button><button class="btn small" data-a="invclearno">Keep</button></div>`;
@@ -688,42 +700,65 @@ async function saveRecipe(id){
   try{await S.db.doc('recipes/'+id).set(clone(r))}catch(e){writeErr(e)}
 }
 
-async function scanCall(prompt,file,onDone){
-  const sc=S.scan;if(sc.busy)return;
-  ctl=new AbortController();sc.busy=true;render(true);
-  try{const out=await S.sample.json(prompt,{images:[file],signal:ctl.signal,cache:false});sc.busy=false;onDone(Array.isArray(out)?out[0]:(out&&Array.isArray(out.items)?out.items[0]:out))}
-  catch(e){
-    sc.busy=false;const c=e&&e.code;
-    sc.msg=c==='cancelled'?'Stopped.':c==='image_rejected'?'That photo couldn\'t be read. Try another.':c==='images_unavailable'?'The photo couldn\'t be sent. Try a smaller one.':c==='rate_limited'?"You've hit your usage limit for now. Try again a bit later.":(c==='not_granted'||c==='sampling_disabled')?'AI help is turned off for this planner.':c==='invalid_json'||c==='empty_completion'?'The reply came back garbled. Try again.':'Something went wrong. Try again.';
-    render(true);
+const DATE_RULES=`in YYYY-MM-DD form (assume the next occurrence when the year is missing, and use the last day of the month when only a month is printed). Never guess a date that isn't printed.`;
+const errText=c=>c==='image_rejected'?"That photo couldn't be read.":c==='images_unavailable'?"The photo couldn't be sent.":c==='rate_limited'?"Usage limit reached. Try again later.":(c==='not_granted'||c==='sampling_disabled')?'AI help is turned off for this planner.':c==='invalid_json'||c==='empty_completion'?'The reply came back garbled.':'Something went wrong.';
+async function shrink(file){
+  try{const bmp=await createImageBitmap(file),k=Math.min(1,1280/Math.max(bmp.width,bmp.height));
+    const c=document.createElement('canvas');c.width=Math.round(bmp.width*k);c.height=Math.round(bmp.height*k);
+    c.getContext('2d').drawImage(bmp,0,0,c.width,c.height);
+    return await new Promise(r=>c.toBlob(b=>r(b||file),'image/jpeg',.85))}
+  catch(e){return file}
+}
+function enqueue(e,type,file){S.scan.jobs.push({e,type,file});pumpJobs()}
+async function pumpJobs(){
+  const sc=S.scan;if(sc.working)return;sc.working=true;
+  while(sc.jobs.length){
+    const j=sc.jobs.shift(),e=j.e;if(e.gone)continue;
+    const prompt=j.type==='date'
+      ?`This photo shows a printed use-by, best-by or expiration date. Read it and give it as "expires" ${DATE_RULES} If there is no readable date, "expires" is "".\nReply with only a JSON object {"expires": string}.`
+      :`This photo shows the package of ONE food item. Identify that single item using a plain grocery name without brand ("shredded cheddar", "canned black beans"). Give a rough amount only if printed or obvious ("32 oz", "2 cans"), otherwise "". "aisle" must be one of ${JSON.stringify(AISLES)}. If a use-by, best-by or expiration date is visible, give it as "expires" ${DATE_RULES} Otherwise "expires" is "".\nReply with only a JSON object {"name": string, "qty": string, "aisle": string, "expires": string}.`;
+    try{
+      const out=await S.sample.json(prompt,{images:[j.file],cache:false});
+      const x=Array.isArray(out)?out[0]:(out&&Array.isArray(out.items)?out.items[0]:out);
+      if(e.gone)continue;
+      if(j.type==='date'){
+        e.dateBusy=false;const d=isoDate(String(x&&x.expires||''));
+        if(d){e.expires=d;e.expAuto=false;e.dateMsg=''}else e.dateMsg="couldn't read a date";
+      }else if(!x||!x.name){e.status='error';e.msg="Couldn't make out the item. Try a closer, brighter photo."}
+      else{
+        const read=isoDate(String(x.expires||''));
+        Object.assign(e,{status:'ready',name:String(x.name),qty:String(x.qty||''),aisle:AISLES.includes(x.aisle)?x.aisle:guessAisle(x.name),purchased:todayISO(),expires:read||addDays(todayISO(),DEFAULT_SHELF_DAYS),expAuto:!read});
+      }
+    }catch(err){
+      if(e.gone)continue;
+      if(j.type==='date'){e.dateBusy=false;e.dateMsg=errText(err&&err.code).toLowerCase()}
+      else{e.status='error';e.msg=errText(err&&err.code)}
+    }
+    qRefresh(e);
+  }
+  sc.working=false;
+}
+async function onPhoto(file){
+  const sc=S.scan;if(!file)return;
+  const small=await shrink(file);
+  if(sc.mode==='date'){
+    const e=sc.queue.find(q=>q.id===sc.dateFor);if(!e||e.gone)return;
+    e.dateBusy=true;e.dateMsg='';qRefresh(e);enqueue(e,'date',small);
+  }else{
+    const e={id:'q'+(++sc.seq),url:URL.createObjectURL(small),file:small,status:'busy',loc:sc.loc,shelf:sc.shelf.trim()};
+    sc.queue.push(e);render(true);enqueue(e,'scan',small);
   }
 }
-const DATE_RULES=`in YYYY-MM-DD form (assume the next occurrence when the year is missing, and use the last day of the month when only a month is printed). Never guess a date that isn't printed.`;
-function aiScan(file){
-  const sc=S.scan;sc.msg='Reading the label…';sc.found=null;
-  const prompt=`This photo shows the package of ONE food item. Identify that single item using a plain grocery name without brand ("shredded cheddar", "canned black beans"). Give a rough amount only if printed or obvious ("32 oz", "2 cans"), otherwise "". "aisle" must be one of ${JSON.stringify(AISLES)}. If a use-by, best-by or expiration date is visible, give it as "expires" ${DATE_RULES} Otherwise "expires" is "".\nReply with only a JSON object {"name": string, "qty": string, "aisle": string, "expires": string}.`;
-  scanCall(prompt,file,x=>{
-    if(!x||!x.name){sc.msg="I couldn't make out the item. Try a closer, brighter photo.";render(true);return}
-    const purchased=todayISO(),read=isoDate(String(x.expires||''));
-    sc.found={name:String(x.name),qty:String(x.qty||''),aisle:AISLES.includes(x.aisle)?x.aisle:guessAisle(x.name),purchased,expires:read||addDays(purchased,DEFAULT_SHELF_DAYS),expAuto:!read};
-    sc.msg='';render(true);
-  });
+function pickPhoto(mode,lib,id){
+  const sc=S.scan;sc.mode=mode;sc.dateFor=id||null;const p=$(lib?'#photoLib':'#photoCam');p.value='';p.click();
 }
-function aiDate(file){
-  const sc=S.scan;sc.msg='Reading the date…';
-  const prompt=`This photo shows a printed use-by, best-by or expiration date. Read it and give it as "expires" ${DATE_RULES} If there is no readable date, "expires" is "".\nReply with only a JSON object {"expires": string}.`;
-  scanCall(prompt,file,x=>{
-    const d=isoDate(String(x&&x.expires||''));
-    if(d){sc.found.expires=d;sc.found.expAuto=false;sc.msg=''}else sc.msg="Couldn't read a date. Kept the default; you can edit it.";
-    render(true);
-  });
-}
-function onPhoto(file){
-  const sc=S.scan;if(!file)return;
-  if(sc.mode==='date'&&sc.found)aiDate(file);else aiScan(file);
-}
-function pickPhoto(mode,lib){
-  const sc=S.scan;sc.mode=mode;const p=$(lib?'#photoLib':'#photoCam');p.value='';p.click();
+function qRemove(e){e.gone=true;try{URL.revokeObjectURL(e.url)}catch(x){}S.scan.queue=S.scan.queue.filter(q=>q!==e)}
+function qCommit(e){
+  const name=(e.name||'').trim();if(!name)return false;
+  const extra={location:e.loc,shelf:e.shelf,purchased:isoDate(e.purchased),expires:isoDate(e.expires)};
+  const ex=S.inv.items.find(x=>norm(x.name)===norm(name));
+  if(ex){if(e.qty)ex.qty=e.qty;for(const k in extra)if(extra[k])ex[k]=extra[k]}else S.inv.items.push({name,qty:e.qty,aisle:e.aisle,...extra});
+  qRemove(e);return true;
 }
 
 /* ---------- actions ---------- */
@@ -806,14 +841,14 @@ const A={
   stop:()=>{if(ctl)ctl.abort()},
   phcam:()=>pickPhoto('pkg',false),
   phlib:()=>pickPhoto('pkg',true),
-  phdate:()=>pickPhoto('date',false),
-  fdiscard:()=>{S.scan.found=null;S.scan.msg='';render(true)},
-  fsave:(t)=>{const sc=S.scan,f=sc.found;const name=(f.name||'').trim();if(!name)return toast('Give the item a name first.');
-    const extra={location:sc.loc,shelf:sc.shelf.trim(),purchased:isoDate(f.purchased),expires:isoDate(f.expires)};
-    const ex=S.inv.items.find(x=>norm(x.name)===norm(name));
-    if(ex){if(f.qty)ex.qty=f.qty;for(const k in extra)if(extra[k])ex[k]=extra[k]}else S.inv.items.push({name,qty:f.qty,aisle:f.aisle,...extra});
-    S.inv.updated=Date.now();saveInv();sc.found=null;sc.msg='';render(true);toast(`Added ${name}`);
-    if(t&&t.dataset.next)pickPhoto('pkg',false)},
+  qdate:t=>pickPhoto('date',false,t.dataset.id),
+  qdel:t=>{const e=S.scan.queue.find(q=>q.id===t.dataset.id);if(e){qRemove(e);render(true)}},
+  qretry:t=>{const e=S.scan.queue.find(q=>q.id===t.dataset.id);if(e){e.status='busy';qRefresh(e);enqueue(e,'scan',e.file)}},
+  qadd:t=>{const e=S.scan.queue.find(q=>q.id===t.dataset.id);if(!e)return;
+    if(!qCommit(e))return toast('Give the item a name first.');
+    S.inv.updated=Date.now();saveInv();render(true);toast(`Added ${e.name}`)},
+  qaddall:()=>{let n=0;for(const e of S.scan.queue.filter(q=>q.status==='ready'))if(qCommit(e))n++;
+    if(n){S.inv.updated=Date.now();saveInv();render(true);toast(`Added ${n} item${n===1?'':'s'}`)}},
   invadd:()=>{const inp=$('#invName');const name=(inp.value||'').trim();if(!name)return inp.focus();S.inv.items.push({name,qty:'',aisle:guessAisle(name)});S.inv.updated=Date.now();saveInv();render(true);const n=$('#invName');if(n)n.focus()},
   invused:t=>{const it=S.inv.items.splice(Number(t.dataset.i),1)[0];saveInv();render(true);if(it)toast(`${it.name} removed`)},
   invclear:()=>{S.confirmInvClear=true;render(true)},
@@ -850,10 +885,9 @@ document.addEventListener('input',ev=>{
   else if(b==='ai.create')S.ai.create=t.value;
   else if(b==='scan.loc')S.scan.loc=t.value;
   else if(b==='scan.shelf')S.scan.shelf=t.value;
-  else if(b==='f.name'&&S.scan.found)S.scan.found.name=t.value;
-  else if(b==='f.qty'&&S.scan.found)S.scan.found.qty=t.value;
-  else if(b==='f.expires'&&S.scan.found){S.scan.found.expires=t.value;S.scan.found.expAuto=false}
-  else if(b==='f.purchased'&&S.scan.found){const f=S.scan.found;f.purchased=t.value;if(f.expAuto&&isoDate(t.value)){f.expires=addDays(t.value,DEFAULT_SHELF_DAYS);const e=$('[data-bind="f.expires"]');if(e)e.value=f.expires}}
+  else if(b.startsWith('q:')){const [,id,k]=b.split(':'),e=S.scan.queue.find(q=>q.id===id);if(!e)return;e[k]=t.value;
+    if(k==='expires')e.expAuto=false;
+    if(k==='purchased'&&e.expAuto&&isoDate(t.value)){e.expires=addDays(t.value,DEFAULT_SHELF_DAYS);const x=$(`#q-${id} [data-bind="q:${id}:expires"]`);if(x)x.value=e.expires}}
   else if(b.startsWith('note:')){const p=b.slice(5),id=S.sheet&&S.sheet.id,r=id&&S.recipes[id];if(!r)return;r.rating[p].note=t.value;const k=id+':'+p;clearTimeout(noteTimers[k]);noteTimers[k]=setTimeout(()=>saveRecipe(id),600)}
 });
 document.addEventListener('keydown',ev=>{
