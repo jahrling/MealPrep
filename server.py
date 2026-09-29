@@ -12,6 +12,10 @@ Config via environment variables, or a .env file next to this script:
                       fridge photo scanning). Without it, those buttons show
                       a message instead of erroring.
   ANTHROPIC_MODEL     model id to call (default claude-sonnet-5)
+  OLLAMA_VISION_MODEL local vision model (e.g. qwen3.5:9b). When set, requests
+                      that include photos go to Ollama instead of Anthropic,
+                      so inventory scans stay on the home network.
+  OLLAMA_URL          Ollama endpoint (default http://localhost:11434)
 """
 import json
 import os
@@ -64,6 +68,8 @@ load_dotenv(ENV_PATH)
 
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 ANTHROPIC_MODEL = os.environ.get('ANTHROPIC_MODEL', 'claude-sonnet-5')
+OLLAMA_VISION_MODEL = os.environ.get('OLLAMA_VISION_MODEL', '')
+OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://localhost:11434').rstrip('/')
 PORT = int(os.environ.get('PORT', '8002'))
 
 _local = threading.local()
@@ -153,15 +159,56 @@ def call_anthropic(prompt, images):
     except Exception as e:
         return {'error': str(e), 'code': 'unknown'}
 
-    text = ''.join(b.get('text', '') for b in out.get('content', []) if b.get('type') == 'text').strip()
+    text = ''.join(b.get('text', '') for b in out.get('content', []) if b.get('type') == 'text')
+    return parse_json_reply(text)
+
+
+def parse_json_reply(text):
+    text = text.strip()
     if not text:
         return {'error': 'empty completion', 'code': 'empty_completion'}
-    text = re.sub(r'^```(?:json)?\s*|\s*```\s*$', '', text.strip())
+    text = re.sub(r'^```(?:json)?\s*|\s*```\s*$', '', text)
     try:
         parsed = json.loads(text)
     except Exception:
         return {'error': 'invalid json', 'code': 'invalid_json'}
     return {'result': parsed}
+
+
+def call_ollama(prompt, images):
+    """Send a prompt plus photos to a local Ollama vision model."""
+    b64 = []
+    for img in images or []:
+        m = re.match(r'^data:image/[\w.+-]+;base64,(.*)$', img, re.S)
+        if m:
+            b64.append(m.group(1))
+    if not b64:
+        return {'error': 'no readable images', 'code': 'image_rejected'}
+    body = json.dumps({
+        'model': OLLAMA_VISION_MODEL,
+        'stream': False,
+        'think': False,
+        'format': 'json',
+        'messages': [{'role': 'user', 'content': prompt, 'images': b64}],
+    }).encode()
+    req = urllib.request.Request(
+        OLLAMA_URL + '/api/chat',
+        data=body,
+        method='POST',
+        headers={'content-type': 'application/json'},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            out = json.loads(resp.read())
+    except Exception as e:
+        return {'error': 'Ollama request failed: %s' % e, 'code': 'unknown'}
+    return parse_json_reply((out.get('message') or {}).get('content', ''))
+
+
+def call_ai(prompt, images):
+    if images and OLLAMA_VISION_MODEL:
+        return call_ollama(prompt, images)
+    return call_anthropic(prompt, images)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -217,7 +264,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({'id': new_id})
         elif parsed.path == '/api/ai':
             body = self._read_json()
-            result = call_anthropic(body.get('prompt', ''), body.get('images'))
+            result = call_ai(body.get('prompt', ''), body.get('images'))
             status = result.pop('status', 200)
             self._send_json(result, status)
         else:
@@ -257,6 +304,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    if OLLAMA_VISION_MODEL:
+        print(f'Photo scans use Ollama model {OLLAMA_VISION_MODEL} at {OLLAMA_URL}', file=sys.stderr)
     if not ANTHROPIC_API_KEY:
         print(
             'Warning: ANTHROPIC_API_KEY is not set -- AI features (plan my week, '
