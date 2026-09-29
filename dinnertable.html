@@ -412,16 +412,18 @@ function benchList(){
   const rest=Object.keys(S.recipes).filter(id=>!playIds.has(id)&&!pulled.includes(id)).sort((a,b)=>rank(b)-rank(a)||S.recipes[a].name.localeCompare(S.recipes[b].name));
   return pulled.concat(rest).filter(id=>!q||norm(S.recipes[id].name+' '+S.recipes[id].protein).includes(q)).map(id=>[id,S.recipes[id],pulled.includes(id)]);
 }
+const SPECIALS={leftovers:'Leftovers night',out:'Eating out'};
 function benchHTML(){
   const sel=S.lineup.sel,list=benchList();
-  return list.length?list.map(([id,r,pulled])=>{const n=ratingCount(r);return `<button class="rcard${sel&&sel.kind==='bench'&&sel.id===id?' sel':''}" data-a="lbench" data-id="${esc(id)}"><div class="row"><span class="rn grow">${esc(r.name)}</span>${n?`<span class="votes num">★${ratingAvg(r).toFixed(1)} (${n})</span>`:''}</div><div class="chips">${pulled?'<span class="chip pulled">Pulled this week</span>':''}<span class="chip scratch num">${I.leaf}${r.scratch.time} min</span><span class="chip shortcut num">${I.bolt}${r.shortcut.time} min</span></div></button>`}).join(''):'<p class="muted" style="margin:0">Nobody left on the bench. Save more recipes from the Ideas tab.</p>';
+  const specials=`<div class="btnrow">${Object.entries(SPECIALS).map(([k,l])=>`<button class="btn grow${sel&&sel.kind==='special'&&sel.v===k?' primary':''}" data-a="lspecial" data-v="${k}">${l}</button>`).join('')}</div>`;
+  return specials+(list.length?list.map(([id,r,pulled])=>{const n=ratingCount(r);return `<button class="rcard${sel&&sel.kind==='bench'&&sel.id===id?' sel':''}" data-a="lbench" data-id="${esc(id)}"><div class="row"><span class="rn grow">${esc(r.name)}</span>${n?`<span class="votes num">★${ratingAvg(r).toFixed(1)} (${n})</span>`:''}</div><div class="chips">${pulled?'<span class="chip pulled">Pulled this week</span>':''}<span class="chip scratch num">${I.leaf}${r.scratch.time} min</span><span class="chip shortcut num">${I.bolt}${r.shortcut.time} min</span></div></button>`}).join(''):'<p class="muted" style="margin:0">Nobody left on the bench. Save more recipes from the Ideas tab.</p>');
 }
 function lineupPanel(){
   const sel=S.lineup.sel;
   const slotRecipe=sel&&sel.kind==='slot'&&S.plan.days[sel.day]&&S.plan.days[sel.day].recipeId;
   const hint=!sel?'Tap a dinner to pick it up, then tap another night to swap places, or tap a bench recipe to sub it in.'
     :sel.kind==='slot'?`${DAYS_LONG[sel.day]} is picked up. Tap another night to move it, a bench recipe to sub it in, or archive it out of this week.`
-    :`${esc(S.recipes[sel.id]?S.recipes[sel.id].name:'Recipe')} is ready. Tap the night it should play.`;
+    :`${esc(sel.kind==='special'?SPECIALS[sel.v]:S.recipes[sel.id]?S.recipes[sel.id].name:'Recipe')} is ready. Tap the night it should play.`;
   let h=`<div class="lineup-hint">${hint}</div>`;
   h+=`<div class="btnrow" style="margin-bottom:12px">${sel&&sel.kind==='slot'?`<button class="btn danger grow" data-a="larchive">Archive from this week</button>`:''}<button class="btn primary grow" data-a="lineup">Done</button></div>`;
   h+=`<section class="section bench"><h3>Bench</h3><input type="search" id="bq" data-bind="bq" placeholder="Search the bench" value="${esc(S.lineup.q)}" aria-label="Search the bench"><div class="rlist" id="blist" style="margin-top:8px">${benchHTML()}</div></section>`;
@@ -767,11 +769,16 @@ const A={
       if(!S.plan.days[sel.day]){L.sel=null;return render(true)}
       if(sel.day!==d){const from=S.plan.days[sel.day];if(e)S.plan.days[sel.day]=e;else delete S.plan.days[sel.day];S.plan.days[d]=from;savePlan();toast(`Moved to ${DAYS_LONG[d]}`)}
       L.sel=null}
+    else if(sel.kind==='special'){S.plan.days[d]={type:sel.v};savePlan();toast(`${SPECIALS[sel.v]} on ${DAYS_LONG[d]}`);L.sel=null}
     else{const r=S.recipes[sel.id];if(r){lineupPlace(d,sel.id,e&&e.recipeId&&e.mode,e&&e.recipeId&&e.servings);savePlan();toast(`${r.name} is in for ${DAYS_LONG[d]}`)}L.sel=null}
     render(true)},
   lbench:t=>{const id=t.dataset.id,L=S.lineup,sel=L.sel,r=S.recipes[id];if(!r)return;
     if(sel&&sel.kind==='slot'){const old=S.plan.days[sel.day];lineupPlace(sel.day,id,old&&old.mode,old&&old.servings);savePlan();toast(`${r.name} subbed in for ${DAYS_LONG[sel.day]}`);L.sel=null}
     else L.sel=sel&&sel.kind==='bench'&&sel.id===id?null:{kind:'bench',id};
+    render(true)},
+  lspecial:t=>{const v=t.dataset.v,L=S.lineup,sel=L.sel;
+    if(sel&&sel.kind==='slot'){S.plan.days[sel.day]={type:v};savePlan();toast(`${SPECIALS[v]} on ${DAYS_LONG[sel.day]}`);L.sel=null}
+    else L.sel=sel&&sel.kind==='special'&&sel.v===v?null:{kind:'special',v};
     render(true)},
   larchive:()=>{const L=S.lineup,sel=L.sel;if(!sel||sel.kind!=='slot')return;const e=S.plan.days[sel.day];if(!e)return;
     if(e.recipeId)S.plan.archive=(S.plan.archive||[]).filter(a=>a.recipeId!==e.recipeId).concat([{recipeId:e.recipeId,mode:e.mode||'shortcut'}]);
