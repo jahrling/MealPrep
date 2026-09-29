@@ -313,7 +313,7 @@ function adjDate(ms){const d=new Date(ms);return MONTHS[d.getMonth()]+' '+d.getD
 const ver=(r,mode)=>(r&&(r[mode]&&r[mode].ingredients.length?r[mode]:r.shortcut))||{time:0,ingredients:[],steps:[]};
 
 /* ---------- state ---------- */
-const S={tab:'week',weekKey:weekKeyOf(new Date()),recipes:{},recipesLoaded:false,
+const S={tab:'week',weekKey:weekKeyOf(new Date()),recipes:{},recipesLoaded:false,restaurants:{},
   plan:{days:{},notes:''},shop:{have:{},got:{},extras:[]},pantry:{items:[]},inv:{items:[]},settings:{servings:4},
   scan:{files:[],urls:[],found:null,busy:false,msg:''},imgLimit:null,
   shopView:'list',rq:'',rfilter:'all',sheet:null,db:null,sample:null,dbState:'loading',readOnly:false,
@@ -385,6 +385,38 @@ function shopItems(){
   });
 }
 
+/* ---------- restaurants ---------- */
+const money=n=>'$'+Number(n).toFixed(2);
+const parseMoney=v=>{const n=parseFloat(String(v||'').replace(/[^0-9.]/g,''));return isFinite(n)?Math.round(n*100)/100:null};
+const normAddr=s=>norm(s).replace(/[.,#]/g,'');
+function restaurantMatches(name,addr){
+  const n=norm(name),a=normAddr(addr),out=[];
+  for(const [id,r] of Object.entries(S.restaurants)){
+    const rn=norm(r.name),ra=normAddr(r.address);
+    const sameAddr=!!a&&!!ra&&a===ra;
+    const sameName=!!n&&!!rn&&(n===rn||(Math.min(n.length,rn.length)>=4&&(n.includes(rn)||rn.includes(n))));
+    if(sameAddr||sameName)out.push({id,r,score:(sameAddr?2:0)+(sameName?1:0)});
+  }
+  return out.sort((x,y)=>y.score-x.score||x.r.name.localeCompare(y.r.name));
+}
+async function saveRestaurant(id,r){
+  if(!S.db||S.readOnly)return;
+  try{await S.db.doc('restaurants/'+id).set(clone(r))}catch(e){writeErr(e)}
+}
+function finishOut(id){
+  const sh=S.sheet,f=sh.f,d=sh.day,total=parseMoney(f.total);
+  const date=ymd(dayDate(S.weekKey,d));
+  let r=id&&S.restaurants[id];
+  if(!r){
+    r={name:f.name.trim(),address:f.addr.trim(),visits:[],created:Date.now()};
+    id=S.db?S.db.collection('restaurants').doc().id:'local-'+Date.now();
+  }else{r=clone(r);if(!r.address&&f.addr.trim())r.address=f.addr.trim()}
+  r.visits=(r.visits||[]).filter(v=>v.date!==date).concat([{date,ate:f.ate.trim(),total}]).sort((a,b)=>a.date<b.date?-1:1);
+  S.restaurants[id]=r;saveRestaurant(id,r);
+  S.plan.days[d]={type:'out',restaurantId:id,name:r.name,address:r.address,ate:f.ate.trim(),total};
+  savePlan();S.sheet=null;render(true);toast(`Logged ${r.name}`);
+}
+
 /* ---------- UI bits ---------- */
 function toast(msg){const t=$('#toast');t.textContent=msg;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>t.hidden=true,2600)}
 const modeChip=m=>m==='scratch'?`<span class="chip scratch">${I.leaf}Scratch</span>`:`<span class="chip shortcut">${I.bolt}Shortcut</span>`;
@@ -424,12 +456,12 @@ function viewWeek(){
     const stamp=`<div class="dstamp"><span class="dn">${DAYS[d]}</span><span class="dd num">${dt.getDate()}</span></div>`;
     let body;
     if(!e)body=`<div class="dadd">${I.plus.replace('<svg','<svg width="16" height="16"')} Add dinner</div>`;
-    else if(e.type==='leftovers')body='<div class="dname">Leftovers night</div><div class="dspecial" style="font-size:13px">Clean out the fridge</div>';
-    else if(e.type==='out')body='<div class="dname">Eating out</div><div class="dspecial" style="font-size:13px">No cooking tonight</div>';
+    else if(e.type==='leftovers')body=`<div class="dname">Leftovers night</div><div class="dspecial" style="font-size:13px">${e.ate?esc(e.ate):'Tap to log what we had'}</div>`;
+    else if(e.type==='out')body=e.name?`<div class="dname">${esc(e.name)}</div><div class="dspecial" style="font-size:13px">${e.total!=null?'Ate out · '+money(e.total):'Ate out'}</div>`:'<div class="dname">Eating out</div><div class="dspecial" style="font-size:13px">Tap to log the restaurant</div>';
     else{const r=S.recipes[e.recipeId];
       body=r?`<div class="dname">${esc(r.name)}</div><div class="chips">${modeChip(e.mode)}<span class="chip num">${ver(r,e.mode).time} min</span>${e.servings&&e.servings!==S.settings.servings?`<span class="chip num">Serves ${e.servings}</span>`:''}${newChip(r)}</div>${vp(r)}`
         :'<div class="dname muted">Recipe was deleted</div><div class="dadd" style="font-size:13px">Tap to choose another</div>';}
-    const act=!e||(e.recipeId&&!S.recipes[e.recipeId])?`data-a="pick" data-day="${d}"`:e.type?`data-a="pick" data-day="${d}"`:`data-a="openday" data-day="${d}"`;
+    const act=!e||(e.recipeId&&!S.recipes[e.recipeId])?`data-a="pick" data-day="${d}"`:e.type==='out'?`data-a="outday" data-day="${d}"`:e.type==='leftovers'?`data-a="leftday" data-day="${d}"`:e.type?`data-a="pick" data-day="${d}"`:`data-a="openday" data-day="${d}"`;
     h+=`<button class="day${isT?' today':''}" ${act} aria-label="${DAYS_LONG[d]}">${stamp}<div class="dbody">${body}</div></button>`;
   }
   h+='</div>';
@@ -578,6 +610,28 @@ function renderSheet(){
     <div class="rlist" id="plist">${recipeListHTML(pickList(),'choose')}</div>
     <div class="btnrow"><button class="btn grow" data-a="special" data-v="leftovers">Leftovers night</button><button class="btn grow" data-a="special" data-v="out">Eating out</button></div>
     ${S.plan.days[sh.day]?'<button class="btn danger ghost" data-a="rmday">Clear this night</button>':''}`;
+  }else if(sh.type==='left'){
+    title=`${DAYS_LONG[sh.day]} · leftovers`;
+    body=`<div><div class="eyebrow" style="margin-bottom:6px">What did we have?</div><textarea data-bind="out:ate" placeholder="Tuesday's chili, half the lasagna, rice and roasted broccoli…">${esc(sh.f.ate)}</textarea></div>
+    <button class="btn primary" data-a="leftsave">Save</button>
+    <button class="btn danger ghost" data-a="rmday">Clear this night</button>`;
+  }else if(sh.type==='out'){
+    title=`${DAYS_LONG[sh.day]} · eating out`;
+    const f=sh.f,lbl=t=>`<div class="eyebrow" style="margin-bottom:6px">${t}</div>`;
+    if(sh.step==='match'){
+      body=`<p style="margin:0">Is this one you've been to before?</p><div class="stack">${sh.cands.map((c,i)=>`<button class="rcard" data-a="outuse" data-i="${i}"><div class="rn">${esc(c.r.name)}</div><div class="rb">${esc(c.r.address||'No address saved')}${(c.r.visits||[]).length?` · ${c.r.visits.length} visit${c.r.visits.length===1?'':'s'}`:''}</div></button>`).join('')}</div>
+      <button class="btn" data-a="outnew">No, add "${esc(f.name.trim())}" as a new restaurant</button><button class="btn ghost small" data-a="outback">Back</button>`;
+    }else if(sh.step==='new'){
+      body=`<p style="margin:0">Nothing in your archive matches. Add <b>${esc(f.name.trim())}</b>${f.addr.trim()?` (${esc(f.addr.trim())})`:''} as a new restaurant?</p>
+      <button class="btn primary" data-a="outnew">Add and log this night</button><button class="btn ghost small" data-a="outback">Back</button>`;
+    }else{
+      body=`<div>${lbl('Where did we go?')}<input type="text" data-bind="out:name" list="restlist" placeholder="Restaurant name" value="${esc(f.name)}" autocomplete="off"><datalist id="restlist">${Object.values(S.restaurants).map(r=>`<option value="${esc(r.name)}">`).join('')}</datalist></div>
+      <div>${lbl('Address')}<input type="text" data-bind="out:addr" placeholder="Street, city" value="${esc(f.addr)}"></div>
+      <div>${lbl('What we ate')}<textarea data-bind="out:ate" placeholder="Fish tacos, kids' cheese quesadilla, chips and queso…">${esc(f.ate)}</textarea></div>
+      <div>${lbl('Total bill, including tip')}<input type="text" inputmode="decimal" data-bind="out:total" placeholder="$0.00" value="${esc(f.total)}"></div>
+      <button class="btn primary" data-a="outcheck">Save and check my restaurants</button>
+      ${S.plan.days[sh.day]?'<button class="btn danger ghost" data-a="rmday">Clear this night</button>':''}`;
+    }
   }else if(sh.type==='recipe'){
     const r=S.recipes[sh.id];if(!r){S.sheet=null;el.innerHTML='';return}
     title=r.name;
@@ -728,7 +782,16 @@ const A={
   scrim:(t,ev)=>{if(ev.target===t){S.sheet=null;render(true)}},
   pmode:t=>{S.sheet.mode=t.dataset.v;render(true)},
   choose:t=>{const d=S.sheet.day;S.plan.days[d]={recipeId:t.dataset.id,mode:S.sheet.mode,servings:null};savePlan();S.sheet=null;render(true);toast(`Added to ${DAYS_LONG[d]}`)},
-  special:t=>{const d=S.sheet.day;S.plan.days[d]={type:t.dataset.v};savePlan();S.sheet=null;render(true)},
+  special:t=>{const d=S.sheet.day;if(t.dataset.v==='out'){S.plan.days[d]={type:'out'};savePlan();return A.outday({dataset:{day:d}})}S.plan.days[d]={type:'leftovers'};savePlan();A.leftday({dataset:{day:d}})},
+  leftday:t=>{const d=Number(t.dataset.day),e=S.plan.days[d]||{};S.sheet={type:'left',day:d,f:{ate:e.ate||''}};render(true)},
+  leftsave:()=>{const d=S.sheet.day,ate=S.sheet.f.ate.trim();S.plan.days[d]={type:'leftovers',ate};savePlan();S.sheet=null;render(true);toast('Leftovers logged')},
+  outday:t=>{const d=Number(t.dataset.day),e=S.plan.days[d]||{};S.sheet={type:'out',day:d,step:'form',cands:[],f:{name:e.name||'',addr:e.address||'',ate:e.ate||'',total:e.total!=null?String(e.total):''}};render(true)},
+  outcheck:()=>{const sh=S.sheet;if(!sh.f.name.trim()){toast('Enter the restaurant name first.');return}
+    if(sh.f.total.trim()&&parseMoney(sh.f.total)==null){toast('The total should be a number, like 84.50.');return}
+    sh.cands=restaurantMatches(sh.f.name,sh.f.addr);sh.step=sh.cands.length?'match':'new';render(true)},
+  outuse:t=>{const c=S.sheet.cands[Number(t.dataset.i)];if(c)finishOut(c.id)},
+  outnew:()=>finishOut(null),
+  outback:()=>{S.sheet.step='form';render(true)},
   rmday:()=>{const d=S.sheet.day;delete S.plan.days[d];savePlan();S.sheet=null;render(true);toast(`${DAYS_LONG[d]} cleared`)},
   swap:()=>{const d=S.sheet.day;S.sheet={type:'pick',day:d,mode:S.plan.days[d].mode||defaultMode(d),q:''};render(true)},
   smode:t=>{const sh=S.sheet;if(sh.type==='recipe'&&sh.day!=null){S.plan.days[sh.day].mode=t.dataset.v;savePlan()}else sh.mode=t.dataset.v;render(true)},
@@ -834,6 +897,7 @@ document.addEventListener('input',ev=>{
   if(b==='notes'){S.plan.notes=t.value;clearTimeout(notesTimer);notesTimer=setTimeout(savePlan,600)}
   else if(b==='rq'){S.rq=t.value;const l=$('#rlist');if(l)l.innerHTML=recipeListHTML(filteredRecipes(),'openrec')}
   else if(b==='pq'){S.sheet.q=t.value;const l=$('#plist');if(l)l.innerHTML=recipeListHTML(pickList(),'choose')}
+  else if(b.startsWith('out:')){if(S.sheet&&S.sheet.f)S.sheet.f[b.slice(4)]=t.value}
   else if(b==='adj'){if(S.sheet)S.sheet.adj=t.value}
   else if(b==='ai.fridge')S.ai.fridge=t.value;
   else if(b==='ai.create')S.ai.create=t.value;
@@ -913,6 +977,7 @@ S.db=dbShim();S.dbState='ok';S.sample=sampleShim();
 (async()=>{
   try{S.imgLimit=await S.sample.limits()}catch(e){S.imgLimit={}}
   S.db.doc('inventory/current').onSnapshot(s=>{if(busy('inventory/current'))return;const d=s.exists?s.data():null;S.inv={items:clone((d&&d.items)||[]),updated:Number(d&&d.updated)||0};render()},onErr);
+  S.db.collection('restaurants').onSnapshot(q=>{const r={};q.docs.forEach(d=>{const x=d.data()||{};r[d.id]={name:String(x.name||''),address:String(x.address||''),visits:Array.isArray(x.visits)?x.visits:[],created:x.created||0}});S.restaurants=r;render()},onErr);
   S.db.collection('recipes').onSnapshot(q=>{const r={};q.docs.forEach(d=>{r[d.id]=normRecipe(d.data())});S.recipes=r;S.recipesLoaded=true;render()},onErr);
   S.db.doc('settings/family').onSnapshot(s=>{if(busy('settings/family'))return;const d=s.exists?s.data():null;S.settings={servings:Number(d&&d.servings)||4};render()},onErr);
   S.db.doc('pantry/staples').onSnapshot(s=>{if(busy('pantry/staples'))return;const d=s.exists?s.data():null;S.pantry={items:clone((d&&d.items)||[])};render()},onErr);
