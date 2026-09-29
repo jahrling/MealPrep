@@ -224,6 +224,7 @@ label.inline input{width:18px;height:18px;accent-color:var(--accent)}
 
 <script>
 (function(){
+const LOCATIONS=["Refrigerator","Freezer","Deep freezer","Spice rack","Pantry / cabinet"];
 const AISLES=["Produce","Meat & Seafood","Deli & Bakery","Dairy & Eggs","Frozen","Pantry & Canned","Pasta, Rice & Grains","Spices & Baking","Sauces & Condiments","International","Snacks & Drinks","Other"];
 const DAYS=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const DAYS_LONG=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
@@ -315,7 +316,7 @@ const ver=(r,mode)=>(r&&(r[mode]&&r[mode].ingredients.length?r[mode]:r.shortcut)
 /* ---------- state ---------- */
 const S={tab:'week',weekKey:weekKeyOf(new Date()),recipes:{},recipesLoaded:false,
   plan:{days:{},notes:''},shop:{have:{},got:{},extras:[]},pantry:{items:[]},inv:{items:[]},settings:{servings:4},
-  scan:{files:[],urls:[],found:null,busy:false,msg:''},imgLimit:null,
+  scan:{files:[],urls:[],found:null,busy:false,msg:'',loc:LOCATIONS[0],shelf:''},imgLimit:null,
   shopView:'list',rq:'',rfilter:'all',sheet:null,db:null,sample:null,dbState:'loading',readOnly:false,
   ai:{busy:null,msg:'',results:[],newOK:true,fridge:'',create:''},deferred:false};
 let ctl=null,unsubPlan=null,unsubShop=null;
@@ -364,6 +365,10 @@ function nameMatch(list,name){
 function atHome(name){return nameMatch(S.pantry.items,name)?'Pantry staple':nameMatch(S.inv.items,name)?'On hand':''}
 function inPantry(name){return !!atHome(name)}
 const saveInv=()=>save('inventory/current',S.inv);
+const isoDate=v=>/^\d{4}-\d{2}-\d{2}$/.test(v||'')&&!isNaN(Date.parse(v))?v:'';
+const fmtExp=v=>new Date(v+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+const whereText=p=>[p.location,p.shelf].filter(Boolean).join(' · ');
+const invMeta=p=>[p.qty,whereText(p),p.expires?'Expires '+fmtExp(p.expires):''].filter(Boolean).join(' · ');
 function onHandText(){return S.inv.items.map(i=>i.name+(i.qty?` (${i.qty})`:'')).join(', ')}
 function shopItems(){
   const map=new Map();
@@ -493,8 +498,9 @@ function viewOnHand(){
   h+=`<div class="scan"><h3>Snap your fridge and cabinets</h3>`;
   {
     const max=canImg?S.imgLimit.images.maxCount:5;
-    h+=`<p>Take a photo of each fridge shelf, the freezer and your cabinets (up to ${max} at a time). Claude lists what it sees, you check the list, and those items get used first when planning dinners.</p>`;
+    h+=`<p>Take a photo of each fridge shelf, the freezer and your cabinets (up to ${max} at a time). Pick where the photos were taken. It reads labels and expiration dates where visible, you check the list, and those items get used first when planning dinners.</p>`;
     if(sc.urls.length)h+=`<div class="thumbs">${sc.urls.map((u,i)=>`<div><img src="${u}" alt="Photo ${i+1}"><button data-a="phdel" data-i="${i}" aria-label="Remove photo ${i+1}">×</button></div>`).join('')}</div>`;
+    h+=`<div class="addrow2"><select data-bind="scan.loc" aria-label="Where these photos were taken">${LOCATIONS.map(l=>`<option${l===sc.loc?' selected':''}>${l}</option>`).join('')}</select><input type="text" data-bind="scan.shelf" value="${esc(sc.shelf)}" placeholder="Shelf (e.g. top shelf, door)" aria-label="Shelf or spot" style="grid-column:span 2"></div>`;
     h+=`<div class="btnrow"><button class="btn${sc.urls.length?'':' primary'} grow" data-a="phpick" ${sc.busy||sc.urls.length>=max?'disabled':''}>${sc.urls.length?'Add more photos':'Take or choose photos'}</button>${sc.urls.length?`<button class="btn primary grow" data-a="phscan" ${sc.busy?'disabled':''}>${I.spark} Find ingredients</button>`:''}</div>`;
     if(sc.busy)h+=`<div class="status">${dots}<span class="grow">${esc(sc.msg)}</span><button class="btn small" data-a="stop">Stop</button></div>`;
     else if(sc.msg)h+=`<div class="status">${esc(sc.msg)}</div>`;
@@ -502,7 +508,7 @@ function viewOnHand(){
   h+='</div>';
   if(sc.found){
     const n=sc.found.filter(f=>f.on).length;
-    h+=`<section class="section" style="margin-top:16px"><div class="row" style="margin-bottom:6px"><h3 class="grow" style="margin:0">Here's what I found</h3><button class="btn small ghost" data-a="fdall">${sc.found.every(f=>f.on)?'Uncheck all':'Check all'}</button></div><p class="muted" style="margin:0 0 8px;font-size:13.5px">Uncheck anything that's wrong or nearly gone.</p><div class="items found">${sc.found.map((f,i)=>`<div class="item" data-a="ftog" data-i="${i}"><span class="check${f.on?' on':''}" aria-hidden="true">${f.on?I.tick:''}</span><div class="grow"><div class="iname">${esc(f.name)}</div><div class="imeta">${esc(f.aisle)}${f.qty?' · '+esc(f.qty):''}</div></div></div>`).join('')}</div>
+    h+=`<section class="section" style="margin-top:16px"><div class="row" style="margin-bottom:6px"><h3 class="grow" style="margin:0">Here's what I found</h3><button class="btn small ghost" data-a="fdall">${sc.found.every(f=>f.on)?'Uncheck all':'Check all'}</button></div><p class="muted" style="margin:0 0 8px;font-size:13.5px">Uncheck anything that's wrong or nearly gone.</p><div class="items found">${sc.found.map((f,i)=>`<div class="item" data-a="ftog" data-i="${i}"><span class="check${f.on?' on':''}" aria-hidden="true">${f.on?I.tick:''}</span><div class="grow"><div class="iname">${esc(f.name)}</div><div class="imeta">${esc([f.aisle,f.qty,whereText(f),f.expires?'Expires '+fmtExp(f.expires):'No date found'].filter(Boolean).join(' · '))}</div></div></div>`).join('')}</div>
     <div class="btnrow" style="margin-top:10px"><button class="btn primary grow" data-a="fsave" ${n?'':'disabled'}>Add ${n} item${n===1?'':'s'} to On hand</button><button class="btn ghost" data-a="fdiscard">Discard</button></div></section>`;
   }
   h+=`<section class="section"><div class="row" style="margin-bottom:8px"><h3 class="grow" style="margin:0">On hand now</h3>${S.inv.items.length?`<button class="btn small ghost" data-a="invclear">Clear all</button>`:''}</div>`;
@@ -512,7 +518,7 @@ function viewOnHand(){
   else{
     if(S.inv.updated)h+=`<p class="muted" style="margin:8px 0 0;font-size:12.5px">Last updated ${new Date(S.inv.updated).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}. These count as "already have" on the shopping list.</p>`;
     const by={};S.inv.items.forEach((p,i)=>{const a=p.aisle||guessAisle(p.name);(by[a]=by[a]||[]).push([p,i])});
-    for(const a of AISLES){const l=by[a];if(!l)continue;h+=`<div class="aisle"><h4>${a}</h4><div class="items">${l.map(([p,i])=>`<div class="item"><div class="grow"><div class="iname">${esc(p.name)}</div>${p.qty?`<div class="imeta">${esc(p.qty)}</div>`:''}</div><button class="pill" data-a="invused" data-i="${i}">Used up</button></div>`).join('')}</div></div>`}
+    for(const a of AISLES){const l=by[a];if(!l)continue;h+=`<div class="aisle"><h4>${a}</h4><div class="items">${l.map(([p,i])=>`<div class="item"><div class="grow"><div class="iname">${esc(p.name)}</div>${invMeta(p)?`<div class="imeta">${esc(invMeta(p))}</div>`:''}</div><button class="pill" data-a="invused" data-i="${i}">Used up</button></div>`).join('')}</div></div>`}
     h+=`<button class="btn" style="width:100%;margin-top:14px" data-a="usehand">${I.spark} Plan dinners around these</button>`;
   }
   return h+'</section>';
@@ -686,12 +692,12 @@ async function saveRecipe(id){
 async function aiScan(){
   const sc=S.scan;if(!sc.files.length||sc.busy)return;
   ctl=new AbortController();sc.busy=true;sc.msg='Looking through your photos… usually under a minute.';render(true);
-  const prompt=`These ${sc.files.length} photo${sc.files.length===1?'':'s'} show the inside of a family's refrigerator, freezer and/or kitchen cabinets. List the food items you can clearly identify that could be used to cook dinner. Skip non-food items, drinks that aren't cooking ingredients, and anything you can't actually make out. Combine duplicates across photos. Use plain grocery names without brands ("shredded cheddar", "baby carrots", "canned black beans", "frozen peas"). Give a rough amount only when it's obvious ("about half full", "2 cans", "1 bag"), otherwise "". "aisle" must be one of ${JSON.stringify(AISLES)}.\nReply with only a JSON array of {"name": string, "qty": string, "aisle": string}.`;
+  const prompt=`These ${sc.files.length} photo${sc.files.length===1?'':'s'} show the inside of a family's refrigerator, freezer and/or kitchen cabinets. List the food items you can clearly identify that could be used to cook dinner. Skip non-food items, drinks that aren't cooking ingredients, and anything you can't actually make out. Combine duplicates across photos. Use plain grocery names without brands ("shredded cheddar", "baby carrots", "canned black beans", "frozen peas"). Give a rough amount only when it's obvious ("about half full", "2 cans", "1 bag"), otherwise "". "aisle" must be one of ${JSON.stringify(AISLES)}. If a label shows a use-by, best-by or expiration date, read it and give it as "expires" in YYYY-MM-DD form (assume the next occurrence when the year is missing, and use the last day of the month when only a month is printed); otherwise "". Never guess a date that isn't printed.\nReply with only a JSON object {"items": [{"name": string, "qty": string, "aisle": string, "expires": string}]}.`;
   try{
     const out=await S.sample.json(prompt,{images:sc.files,signal:ctl.signal,cache:false});
     const raw=Array.isArray(out)?out:(out&&Array.isArray(out.items)?out.items:[]);
     const seen=new Set();
-    sc.found=raw.filter(x=>x&&x.name&&!seen.has(norm(x.name))&&seen.add(norm(x.name))).map(x=>({name:String(x.name),qty:String(x.qty||''),aisle:AISLES.includes(x.aisle)?x.aisle:guessAisle(x.name),on:true}));
+    sc.found=raw.filter(x=>x&&x.name&&!seen.has(norm(x.name))&&seen.add(norm(x.name))).map(x=>({name:String(x.name),qty:String(x.qty||''),aisle:AISLES.includes(x.aisle)?x.aisle:guessAisle(x.name),expires:isoDate(String(x.expires||'')),location:sc.loc,shelf:sc.shelf.trim(),on:true}));
     sc.busy=false;sc.msg=sc.found.length?'':"I couldn't make out any food. Try closer, brighter photos.";
     if(!sc.found.length)sc.found=null;
     render(true);
@@ -801,7 +807,7 @@ const A={
   fdall:()=>{const all=S.scan.found.every(f=>f.on);S.scan.found.forEach(f=>f.on=!all);render(true)},
   fdiscard:()=>{S.scan.found=null;render(true)},
   fsave:()=>{const picked=S.scan.found.filter(f=>f.on);let added=0;
-    for(const f of picked){const ex=S.inv.items.find(x=>norm(x.name)===norm(f.name));if(ex){if(f.qty)ex.qty=f.qty}else{S.inv.items.push({name:f.name,qty:f.qty,aisle:f.aisle});added++}}
+    for(const f of picked){const ex=S.inv.items.find(x=>norm(x.name)===norm(f.name));const extra={location:f.location,shelf:f.shelf,expires:f.expires};if(ex){if(f.qty)ex.qty=f.qty;for(const k in extra)if(extra[k])ex[k]=extra[k]}else{S.inv.items.push({name:f.name,qty:f.qty,aisle:f.aisle,...extra});added++}}
     S.inv.updated=Date.now();saveInv();S.scan.found=null;clearPhotos();S.scan.msg='';render(true);toast(`Added ${added} item${added===1?'':'s'} to On hand`)},
   invadd:()=>{const inp=$('#invName');const name=(inp.value||'').trim();if(!name)return inp.focus();S.inv.items.push({name,qty:'',aisle:guessAisle(name)});S.inv.updated=Date.now();saveInv();render(true);const n=$('#invName');if(n)n.focus()},
   invused:t=>{const it=S.inv.items.splice(Number(t.dataset.i),1)[0];saveInv();render(true);if(it)toast(`${it.name} removed`)},
@@ -837,6 +843,8 @@ document.addEventListener('input',ev=>{
   else if(b==='adj'){if(S.sheet)S.sheet.adj=t.value}
   else if(b==='ai.fridge')S.ai.fridge=t.value;
   else if(b==='ai.create')S.ai.create=t.value;
+  else if(b==='scan.loc')S.scan.loc=t.value;
+  else if(b==='scan.shelf')S.scan.shelf=t.value;
   else if(b.startsWith('note:')){const p=b.slice(5),id=S.sheet&&S.sheet.id,r=id&&S.recipes[id];if(!r)return;r.rating[p].note=t.value;const k=id+':'+p;clearTimeout(noteTimers[k]);noteTimers[k]=setTimeout(()=>saveRecipe(id),600)}
 });
 document.addEventListener('keydown',ev=>{
