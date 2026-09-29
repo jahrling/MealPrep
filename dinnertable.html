@@ -293,11 +293,14 @@ function normRecipe(r){
     servings:Number(r.servings)||4,scratch:normVersion(r.scratch),shortcut:normVersion(r.shortcut),
     nutrition:r.nutrition&&typeof r.nutrition==='object'?{cal:Number(r.nutrition.cal)||0,protein:Number(r.nutrition.protein)||0,fiber:Number(r.nutrition.fiber)||0}:null,
     rating:normRating(r.rating),
+    adjustments:(Array.isArray(r.adjustments)?r.adjustments:[]).filter(a=>a&&a.note).map(a=>({at:Number(a.at)||0,note:String(a.note),summary:String(a.summary||''),prev:a.prev&&typeof a.prev==='object'?a.prev:null})),
     source:String(r.source||'ai'),created:Number(r.created)||Date.now()};
   if(!out.scratch.ingredients.length&&out.shortcut.ingredients.length)out.scratch=clone(out.shortcut);
   if(!out.shortcut.ingredients.length&&out.scratch.ingredients.length)out.shortcut=clone(out.scratch);
   return out;
 }
+const ADJ_KEYS=['scratch','shortcut','kidTip','prepAhead','nutrition'];
+function adjDate(ms){const d=new Date(ms);return MONTHS[d.getMonth()]+' '+d.getDate()+', '+d.getFullYear()+' · '+d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}
 const ver=(r,mode)=>(r&&(r[mode]&&r[mode].ingredients.length?r[mode]:r.shortcut))||{time:0,ingredients:[],steps:[]};
 
 /* ---------- state ---------- */
@@ -575,6 +578,8 @@ function renderSheet(){
     body+=`<div><div class="eyebrow" style="margin-bottom:6px">How did everyone like it?</div><div class="stack">${PEOPLE.map(p=>{const pr=r.rating[p];const stars=[1,2,3,4,5].map(n=>`<button class="starbtn${n<=pr.stars?' on':''}" data-a="rate" data-person="${p}" data-v="${n}" aria-label="${p}: rate ${n} star${n===1?'':'s'}">${n<=pr.stars?'★':'☆'}</button>`).join('');
       return `<div class="rating-row"><div class="row"><span class="grow" style="font-weight:600">${esc(p)}</span><span class="row" style="gap:1px">${stars}</span></div><input type="text" data-bind="note:${p}" placeholder="${esc(p)}'s notes (optional)" value="${esc(pr.note)}"></div>`;
     }).join('')}</div></div>`;
+    const adjBusy=S.ai.busy==='adjust';
+    body+=`<div><div class="eyebrow" style="margin-bottom:6px">Cooking notes</div><p class="muted" style="margin:0 0 8px;font-size:13px">What would you change next time? Claude updates the recipe itself and logs your note. This is separate from the ratings above.</p><textarea id="adjnote" data-bind="adj" placeholder="Too salty, needed 10 more minutes in the oven, the boys wanted less spice…">${esc(sh.adj||'')}</textarea><button class="btn primary small" style="margin-top:8px" data-a="adjust" ${S.ai.busy||!S.sample?'disabled':''}>Adjust recipe with this note</button>${adjBusy?`<div class="status" style="margin-top:8px">${dots}<span class="grow">${esc(S.ai.msg)}</span><button class="btn small" data-a="stop">Stop</button></div>`:(S.ai.lastKey==='adjust'&&S.ai.msg?`<div class="status" style="margin-top:8px">${esc(S.ai.msg)}</div>`:'')}${r.adjustments.length?`<div class="stack" style="margin-top:10px">${r.adjustments.slice().reverse().map((a,i)=>`<div class="note"><span class="eyebrow">${esc(adjDate(a.at))}</span>${esc(a.note)}${a.summary?`<div class="muted" style="margin-top:4px">Changed: ${esc(a.summary)}</div>`:''}${i===0&&a.prev?`<button class="btn ghost small" style="margin-top:6px" data-a="adjundo" ${S.ai.busy?'disabled':''}>Undo this change</button>`:''}</div>`).join('')}</div>`:''}</div>`;
     body+=`<div><div class="eyebrow" style="margin-bottom:6px">Remix with AI</div><div class="btnrow">${[['faster','Make it faster'],['veg','Sneak in more veggies'],['kid','More kid-friendly'],['flavor','New flavor twist']].map(([k,l])=>`<button class="btn small" data-a="remix" data-v="${k}" ${S.ai.busy||!S.sample?'disabled':''}>${l}</button>`).join('')}</div>${S.ai.busy==='remix'?`<div class="status" style="margin-top:8px">${dots}<span class="grow">${esc(S.ai.msg)}</span><button class="btn small" data-a="stop">Stop</button></div>`:(S.ai.lastKey==='remix'&&S.ai.msg?`<div class="status" style="margin-top:8px">${esc(S.ai.msg)}</div>`:'')}</div>`;
     if(e)body+=`<div class="btnrow"><button class="btn grow" data-a="swap">Swap dinner</button><button class="btn danger grow" data-a="rmday">Remove from ${DAYS[sh.day]}</button></div>`;
     else body+=`<div><div class="eyebrow" style="margin-bottom:6px">Add to this week</div>${dayPickHTML('addday')}</div>`;
@@ -708,8 +713,8 @@ const A={
   wk:t=>{S.weekKey=shiftWeek(S.weekKey,Number(t.dataset.v));S.confirmClear=false;subWeek();render(true)},
   fam:t=>{S.settings.servings=Math.max(1,Math.min(12,S.settings.servings+Number(t.dataset.v)));save('settings/family',S.settings);render(true)},
   pick:t=>{const d=Number(t.dataset.day);const e=S.plan.days[d];S.sheet={type:'pick',day:d,mode:(e&&e.mode)||defaultMode(d),q:''};render(true)},
-  openday:t=>{const d=Number(t.dataset.day);S.sheet={type:'recipe',id:S.plan.days[d].recipeId,day:d};render(true)},
-  openrec:t=>{S.sheet={type:'recipe',id:t.dataset.id,mode:'shortcut',servings:S.settings.servings};render(true)},
+  openday:t=>{const d=Number(t.dataset.day);S.ai.msg='';S.sheet={type:'recipe',id:S.plan.days[d].recipeId,day:d};render(true)},
+  openrec:t=>{S.ai.msg='';S.sheet={type:'recipe',id:t.dataset.id,mode:'shortcut',servings:S.settings.servings};render(true)},
   close:()=>{S.sheet=null;render(true)},
   scrim:(t,ev)=>{if(ev.target===t){S.sheet=null;render(true)}},
   pmode:t=>{S.sheet.mode=t.dataset.v;render(true)},
@@ -726,8 +731,35 @@ const A={
   del:()=>{S.sheet.confirmDel=true;render(true)},
   delno:()=>{S.sheet.confirmDel=false;render(true)},
   delyes:async()=>{const id=S.sheet.id;delete S.recipes[id];S.sheet=null;render(true);if(S.db&&!S.readOnly){try{await S.db.doc('recipes/'+id).delete()}catch(e){writeErr(e)}}toast('Recipe deleted')},
+  adjust:async()=>{
+    const id=S.sheet&&S.sheet.id,r=id&&S.recipes[id];if(!r||S.ai.busy)return;
+    const note=(S.sheet.adj||'').trim();if(!note){S.ai.lastKey='adjust';return aiEnd('Write a note first.')}
+    const base=clone(r);['rating','adjustments','source','created'].forEach(k=>delete base[k]);
+    const past=r.adjustments.map(a=>`- ${adjDate(a.at)}: ${a.note}`).join('\n');
+    const prompt=`You adjust a family's saved dinner recipe using notes from actually cooking it.\n${FAMILY}\n\nCurrent recipe as JSON:\n${JSON.stringify(base)}\n\n${past?`Earlier cooking notes, already applied (keep those improvements unless the new note contradicts them):\n${past}\n\n`:''}New note from the cook: "${note}"\n\nUpdate the recipe so it goes better next time. Change only what the note calls for and keep everything else as is; if the note only concerns one version (scratch or shortcut), leave the other unchanged. Adjust times, amounts and steps as needed, and keep the ingredient shape: {"name": plain grocery name, "amt": number or null, "unit": string, "aisle": one of ${JSON.stringify(AISLES)}}.\nReply with only JSON: {"summary": one or two plain sentences on what you changed and why, "scratch": {"time": minutes, "ingredients": [...], "steps": [...]}, "shortcut": same shape, "kidTip": string, "prepAhead": string, "nutrition": {"cal": number, "protein": grams, "fiber": grams}}`;
+    const signal=aiStart('adjust','Adjusting the recipe… usually under a minute.');
+    try{
+      const out=await S.sample.json(prompt,{signal,cache:false});
+      const okVer=v=>v&&typeof v==='object'&&Array.isArray(v.ingredients)&&v.ingredients.length&&Array.isArray(v.steps)&&v.steps.length;
+      if(!out||typeof out!=='object'||!okVer(out.scratch)||!okVer(out.shortcut))return aiEnd("Nothing usable came back. Your note is still here. Tap the button to try again.");
+      const cur=S.recipes[id];if(!cur)return aiEnd('');
+      const merged=normRecipe({...cur,...ADJ_KEYS.reduce((o,k)=>(out[k]!==undefined&&(k!=='nutrition'||(out[k]&&typeof out[k]==='object'))&&(o[k]=out[k]),o),{})});
+      const prev={};ADJ_KEYS.forEach(k=>prev[k]=clone(cur[k]));
+      merged.adjustments=cur.adjustments.concat([{at:Date.now(),note,summary:String(out.summary||''),prev}]).map((a,i,arr)=>i<arr.length-5?{...a,prev:null}:a);
+      S.recipes[id]=merged;
+      if(S.sheet&&S.sheet.id===id)S.sheet.adj='';
+      saveRecipe(id);aiEnd('');toast('Recipe adjusted');
+    }catch(e){aiErr(e)}
+  },
+  adjundo:()=>{
+    const id=S.sheet&&S.sheet.id,r=id&&S.recipes[id];if(!r||S.ai.busy)return;
+    const last=r.adjustments[r.adjustments.length-1];if(!last||!last.prev)return;
+    const restored=normRecipe({...r,...last.prev});
+    restored.adjustments=r.adjustments.slice(0,-1);
+    S.recipes[id]=restored;S.ai.msg='';saveRecipe(id);render(true);toast('Change undone');
+  },
   remix:t=>{const r=S.recipes[S.sheet.id];if(!r)return;const goal={faster:'faster for a busy weeknight, with a shortcut version under 25 minutes',veg:'packed with more vegetables, some hidden and some visible, while staying kid-friendly',kid:'more kid-friendly for picky days, with familiar textures and a dip or build-your-own element',flavor:'a gentle new-flavor twist (a different cuisine or spice profile) that is still mild enough for a 2-year-old'}[t.dataset.v];
-    const base=clone(r);delete base.rating;delete base.source;delete base.created;
+    const base=clone(r);delete base.rating;delete base.adjustments;delete base.source;delete base.created;
     aiRecipes('remix',`Here is a saved recipe as JSON:\n${JSON.stringify(base)}\n\nRework it to be ${goal}. Keep what makes it appealing to the kids. Give it a new name.`,1)},
   goplan:()=>{S.tab='ideas';render(true);aiPlan()},
   clearweek:()=>{S.confirmClear=true;render(true)},
@@ -793,6 +825,7 @@ document.addEventListener('input',ev=>{
   if(b==='notes'){S.plan.notes=t.value;clearTimeout(notesTimer);notesTimer=setTimeout(savePlan,600)}
   else if(b==='rq'){S.rq=t.value;const l=$('#rlist');if(l)l.innerHTML=recipeListHTML(filteredRecipes(),'openrec')}
   else if(b==='pq'){S.sheet.q=t.value;const l=$('#plist');if(l)l.innerHTML=recipeListHTML(pickList(),'choose')}
+  else if(b==='adj'){if(S.sheet)S.sheet.adj=t.value}
   else if(b==='ai.fridge')S.ai.fridge=t.value;
   else if(b==='ai.create')S.ai.create=t.value;
   else if(b.startsWith('note:')){const p=b.slice(5),id=S.sheet&&S.sheet.id,r=id&&S.recipes[id];if(!r)return;r.rating[p].note=t.value;const k=id+':'+p;clearTimeout(noteTimers[k]);noteTimers[k]=setTimeout(()=>saveRecipe(id),600)}
