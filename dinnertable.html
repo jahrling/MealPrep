@@ -693,7 +693,7 @@ function renderSheet(){
     body+=`<div><div class="eyebrow" style="margin-bottom:6px">Remix with AI</div><div class="btnrow">${[['faster','Make it faster'],['veg','Sneak in more veggies'],['kid','More kid-friendly'],['flavor','New flavor twist']].map(([k,l])=>`<button class="btn small" data-a="remix" data-v="${k}" ${S.ai.busy||!S.sample?'disabled':''}>${l}</button>`).join('')}</div>${S.ai.busy==='remix'?`<div class="status" style="margin-top:8px">${dots}<span class="grow">${esc(S.ai.msg)}</span><button class="btn small" data-a="stop">Stop</button></div>`:(S.ai.lastKey==='remix'&&S.ai.msg?`<div class="status" style="margin-top:8px">${esc(S.ai.msg)}</div>`:'')}</div>`;
     if(e)body+=`<div class="btnrow"><button class="btn grow" data-a="swap">Swap dinner</button><button class="btn danger grow" data-a="rmday">Remove from ${DAYS[sh.day]}</button></div>`;
     else body+=`<div><div class="eyebrow" style="margin-bottom:6px">Add to this week</div>${dayPickHTML('addday')}</div>`;
-    body+=sh.confirmDel?`<div class="confirm"><span class="grow">Delete this recipe for good?</span><button class="btn small danger" data-a="delyes">Delete</button><button class="btn small" data-a="delno">Keep</button></div>`:`<button class="btn ghost danger small" data-a="del">Delete recipe</button>`;
+    body+=sh.confirmDel?`<div class="confirm"><span class="grow">Delete this recipe for good?</span><button class="btn small danger" data-a="delyes">Delete</button><button class="btn small" data-a="delno">Keep</button></div>`:`<button class="btn ghost danger small" data-a="del" style="font-weight:700">Delete recipe</button>`;
   }else if(sh.type==='preview'){
     const r=S.ai.results[sh.i];if(!r){S.sheet=null;el.innerHTML='';return}
     title=r.name;
