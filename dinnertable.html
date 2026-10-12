@@ -789,7 +789,7 @@ const IMPORT_RULES=`Convert the recipe below into that format.
 - "scratch" is the original recipe, kept faithful: every ingredient with its original amount, and every step in order (tighten the wording if you like, but don't drop anything). Use the original name, and the original number of servings instead of 4.
 - "shortcut" is your easier weeknight version of the same dish, as described above.
 - "blurb", "protein", "veg", "newFlavor", "kidTip", "prepAhead" and "nutrition" are yours to fill in for this family.
-- Add "sourceName": who the recipe comes from, such as the publication, website, cookbook, TV show or creator account ("NYT Cooking", "Smitten Kitchen", "@halfbakedharvest"), or "" if you can't tell.
+- Add "sourceName": who the recipe comes from, such as the publication, website, cookbook, TV show or creator account ("NYT Cooking", "Smitten Kitchen", "@halfbakedharvest"), or "" if you can't tell. Give the plain name in title case, without page numbers or other extras.
 If there is no recipe here, reply with only {"error": "no recipe"}.`;
 async function importRecipe(material,images,src,signal){
   const prompt=`You add recipes to a family's recipe box.\n${FAMILY}\n\n${SHAPE}\n\n${IMPORT_RULES}\n\n${material}\n\nReply with only one JSON recipe object.`;
@@ -830,10 +830,19 @@ async function impText(){
   catch(e){aiErr(e)}
 }
 async function impPhotos(){
-  const ph=S.imp.photos;if(!ph.length)return;
-  const signal=aiStart('import',`Reading ${ph.length} photo${ph.length===1?'':'s'}… this can take a minute.`);
-  try{if(!await importRecipe(`The recipe is in the attached photo${ph.length===1?'':'s'}: a cookbook page, recipe card, or ${ph.length>1?'a series of ':''}screenshots from a social media post or cooking video. Read ${ph.length>1?'across all of them in order':'it'}, including any printed or on-screen text naming the book, show or account.`,ph.map(x=>x.file),{source:'photo',sourceUrl:'',sourceName:''},signal))aiEnd("Couldn't read a recipe from those photos. Try closer, brighter shots of the ingredients and steps.")}
-  catch(e){aiErr(e)}
+  const ph=S.imp.photos,many=ph.length>1;if(!ph.length)return;
+  const signal=aiStart('import',`Reading ${ph.length} photo${many?'s':''}…`);
+  // Two steps: the photo model (local when Ollama is set) only transcribes, then
+  // the text model writes the recipe card, so the shortcut version stays good.
+  const prompt=`The attached photo${many?'s show':' shows'} a recipe: a cookbook page, recipe card, or ${many?'a series of ':''}screenshots from a social media post or cooking video. Transcribe it${many?', reading across all photos in order':''}. Copy every ingredient line exactly as printed, amounts included, and every step in order. "sourceName" is any printed or on-screen book title, show name or @account, or "". "found" is false if there is no recipe.
+Reply with only a JSON object {"found": boolean, "title": string, "sourceName": string, "servings": string, "ingredients": [string], "steps": [string], "notes": string}.`;
+  try{
+    let t=await S.sample.json(prompt,{images:ph.map(x=>x.file),signal,cache:false});
+    if(Array.isArray(t))t=t[0];
+    if(!t||t.found===false||!Array.isArray(t.ingredients)||!t.ingredients.length)return aiEnd("Couldn't read a recipe from those photos. Try closer, brighter shots of the ingredients and steps.");
+    S.ai.msg='Turning it into a recipe card… usually under a minute.';render(true);
+    if(!await importRecipe(`The recipe, transcribed from the cook's photo${many?'s':''} of a cookbook page, recipe card or post:\n${JSON.stringify(t)}`,null,{source:'photo',sourceUrl:'',sourceName:String(t.sourceName||'')},signal))aiEnd("Couldn't make a recipe from those photos. Try closer, brighter shots of the ingredients and steps.");
+  }catch(e){aiErr(e)}
 }
 async function impAddFiles(files){
   const max=(S.imgLimit&&S.imgLimit.images&&S.imgLimit.images.maxCount)||5;
