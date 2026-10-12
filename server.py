@@ -16,17 +16,24 @@ Config via environment variables, or a .env file next to this script:
                       that include photos go to Ollama instead of Anthropic,
                       so inventory scans stay on the home network.
   OLLAMA_URL          Ollama endpoint (default http://localhost:11434)
+
+Recipe import fetches pasted links server-side (/api/fetch-page), only to
+public internet addresses.
 """
+import ipaddress
 import json
 import os
 import re
+import socket
 import sqlite3
 import sys
 import threading
 import time
 import uuid
+import zlib
 import urllib.error
 import urllib.request
+from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -132,7 +139,7 @@ def call_anthropic(prompt, images):
         })
     body = json.dumps({
         'model': ANTHROPIC_MODEL,
-        'max_tokens': 4096,
+        'max_tokens': 8192,
         'messages': [{'role': 'user', 'content': content}],
     }).encode()
     req = urllib.request.Request(
@@ -211,6 +218,219 @@ def call_ai(prompt, images):
     return call_anthropic(prompt, images)
 
 
+# ---------- recipe import from a web page ----------
+
+PAGE_MAX_BYTES = 4 * 1024 * 1024
+PAGE_TEXT_CHARS = 30000
+FETCH_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/130.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate',
+}
+
+
+def public_host(host):
+    """True when every address the host resolves to is on the public internet,
+    so a pasted link can't make the server poke at the home network."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError):
+        return False
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split('%')[0])
+        if not ip.is_global:
+            return False
+    return bool(infos)
+
+
+class PublicRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        u = urlparse(newurl)
+        if u.scheme not in ('http', 'https') or u.port not in (None, 80, 443) \
+                or not public_host(u.hostname or ''):
+            raise urllib.error.URLError('redirected to a non-public address')
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class PageReader(HTMLParser):
+    """Collects JSON-LD blocks, a few meta tags and the visible text of a page."""
+    SKIP = {'script', 'style', 'noscript', 'svg', 'nav', 'footer', 'header', 'form', 'iframe'}
+    BLOCK = {'p', 'div', 'li', 'br', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'section', 'article'}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.jsonld, self.meta, self.title = [], {}, ''
+        self._text, self._skip, self._ld, self._in_title = [], 0, None, False
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == 'script' and (a.get('type') or '').lower() == 'application/ld+json':
+            self._ld = []
+        elif tag == 'meta':
+            key = (a.get('property') or a.get('name') or '').lower()
+            if key in ('og:site_name', 'og:title', 'author') and a.get('content'):
+                self.meta.setdefault(key, a['content'])
+        elif tag == 'title':
+            self._in_title = True
+        if tag in self.SKIP:
+            self._skip += 1
+        elif tag in self.BLOCK:
+            self._text.append('\n')
+
+    def handle_endtag(self, tag):
+        if tag == 'script' and self._ld is not None:
+            self.jsonld.append(''.join(self._ld))
+            self._ld = None
+        if tag == 'title':
+            self._in_title = False
+        if tag in self.SKIP and self._skip:
+            self._skip -= 1
+        elif tag in self.BLOCK:
+            self._text.append('\n')
+
+    def handle_data(self, data):
+        if self._ld is not None:
+            self._ld.append(data)
+        elif self._in_title:
+            self.title += data
+        elif not self._skip:
+            self._text.append(data)
+
+    def text(self):
+        t = re.sub(r'[ \t\r\f\v]+', ' ', ''.join(self._text))
+        return re.sub(r'\s*\n\s*', '\n', t).strip()
+
+
+def find_recipe_ld(node):
+    """Depth-first search of parsed JSON-LD for a schema.org Recipe."""
+    if isinstance(node, list):
+        for x in node:
+            found = find_recipe_ld(x)
+            if found:
+                return found
+    elif isinstance(node, dict):
+        types = node.get('@type')
+        types = types if isinstance(types, list) else [types]
+        # Matches "Recipe", "schema:Recipe" and "http://schema.org/Recipe".
+        if any(re.split(r'[/:]', str(t))[-1] == 'Recipe' for t in types):
+            return node
+        for key in ('@graph', 'mainEntity', 'mainEntityOfPage'):
+            found = find_recipe_ld(node.get(key))
+            if found:
+                return found
+    return None
+
+
+def drop_media(node):
+    if isinstance(node, list):
+        return [drop_media(x) for x in node]
+    if isinstance(node, dict):
+        return {k: drop_media(v) for k, v in node.items()
+                if k not in ('image', 'video', 'thumbnailUrl', 'url', '@id')}
+    return node
+
+
+def trim_recipe_ld(r):
+    """Keep only the fields that describe the recipe itself (drops images,
+    ratings, video blobs and the like that just eat prompt space)."""
+    keep = ('name', 'description', 'author', 'publisher', 'recipeYield', 'prepTime',
+            'cookTime', 'totalTime', 'recipeIngredient', 'recipeInstructions',
+            'recipeCategory', 'recipeCuisine', 'nutrition')
+    out = {k: drop_media(r[k]) for k in keep if r.get(k)}
+    for k in ('author', 'publisher'):
+        v = out.get(k)
+        if isinstance(v, list):
+            v = v[0] if v else None
+        if isinstance(v, dict):
+            v = v.get('name')
+        if v:
+            out[k] = str(v)
+        else:
+            out.pop(k, None)
+    return out
+
+
+def fetch_recipe_page(url):
+    url = (url or '').strip()
+    u = urlparse(url)
+    try:
+        port = u.port
+    except ValueError:
+        port = -1
+    if u.scheme not in ('http', 'https') or not u.hostname or port not in (None, 80, 443):
+        return {'error': 'That doesn\'t look like a web link.', 'code': 'bad_url'}
+    if not public_host(u.hostname):
+        return {'error': 'That link points somewhere the server won\'t fetch.', 'code': 'bad_url'}
+    # No proxies: an http_proxy in the environment would sidestep the address check.
+    # Known gap: the host is resolved again on connect, so DNS rebinding could
+    # still reach a private address. Accepted for a home-network app.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), PublicRedirects)
+    req = urllib.request.Request(url, headers=FETCH_HEADERS)
+    try:
+        with opener.open(req, timeout=20) as resp:
+            final_url = resp.geturl()
+            ctype = resp.headers.get_content_type()
+            charset = resp.headers.get_content_charset() or 'utf-8'
+            encoding = (resp.headers.get('Content-Encoding') or '').lower()
+            raw = resp.read(PAGE_MAX_BYTES)
+    except urllib.error.HTTPError as e:
+        return {'error': 'The site answered with an error (%s); it may block '
+                         'automated readers.' % e.code,
+                'code': 'fetch_failed'}
+    except Exception as e:
+        return {'error': 'Couldn\'t load that page: %s' % e, 'code': 'fetch_failed'}
+
+    if not (ctype.startswith('text/') or ctype == 'application/xhtml+xml'):
+        return {'error': 'That link isn\'t a web page (%s).' % ctype, 'code': 'fetch_failed'}
+    if encoding in ('gzip', 'deflate'):
+        # wbits 47 auto-detects gzip or zlib headers; -15 is raw deflate.
+        for wbits in (47, -15):
+            try:
+                raw = zlib.decompressobj(wbits).decompress(raw, PAGE_MAX_BYTES * 4)
+                break
+            except zlib.error:
+                continue
+        else:
+            return {'error': 'That page came back in a form the server can\'t read.', 'code': 'fetch_failed'}
+    elif encoding not in ('', 'identity'):
+        return {'error': 'That page came back in a form the server can\'t read.', 'code': 'fetch_failed'}
+
+    try:
+        page = raw.decode(charset, errors='replace')
+    except LookupError:
+        page = raw.decode('utf-8', errors='replace')
+    reader = PageReader()
+    try:
+        reader.feed(page)
+        reader.close()
+    except Exception:
+        pass
+    recipe = None
+    for block in reader.jsonld:
+        try:
+            recipe = find_recipe_ld(json.loads(block, strict=False))
+        except Exception:
+            continue
+        if recipe:
+            recipe = trim_recipe_ld(recipe)
+            # A runaway structured block isn't worth the prompt; use the page text.
+            if len(json.dumps(recipe)) > PAGE_TEXT_CHARS:
+                recipe = None
+            break
+    site = reader.meta.get('og:site_name') or re.sub(r'^www\.', '', urlparse(final_url).hostname or '')
+    return {'result': {
+        'url': final_url,
+        'site': site,
+        'title': (reader.meta.get('og:title') or reader.title).strip(),
+        'author': reader.meta.get('author', ''),
+        'recipe': recipe,
+        # The page text is only needed when there's no structured recipe.
+        'text': '' if recipe else reader.text()[:PAGE_TEXT_CHARS],
+    }}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'MealPlan/1.0'
 
@@ -267,6 +487,8 @@ class Handler(BaseHTTPRequestHandler):
             result = call_ai(body.get('prompt', ''), body.get('images'))
             status = result.pop('status', 200)
             self._send_json(result, status)
+        elif parsed.path == '/api/fetch-page':
+            self._send_json(fetch_recipe_page(self._read_json().get('url')))
         else:
             self.send_error(404)
 
