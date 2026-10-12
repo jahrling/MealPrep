@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C24A33"/>
+      <stop offset="1" stop-color="#9A3220"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <!-- family around the table: two grown-ups and a kid peeking over the list -->
+  <g>
+    <path d="M40 330a62 62 0 0 1 124 0z" fill="#F0B94F"/>
+    <circle cx="102" cy="240" r="36" fill="#F0B94F"/>
+    <path d="M348 330a62 62 0 0 1 124 0z" fill="#E3A0C3"/>
+    <circle cx="410" cy="240" r="36" fill="#E3A0C3"/>
+    <circle cx="256" cy="140" r="30" fill="#9CCFB8"/>
+    <path d="M206 190a50 50 0 0 1 100 0z" fill="#9CCFB8"/>
+  </g>
+  <!-- table -->
+  <rect x="96" y="388" width="24" height="70" rx="6" fill="#4A2A18"/>
+  <rect x="392" y="388" width="24" height="70" rx="6" fill="#4A2A18"/>
+  <rect x="56" y="360" width="400" height="40" rx="14" fill="#7A4A2A"/>
+  <rect x="56" y="360" width="400" height="14" rx="7" fill="#96603A"/>
+  <!-- checklist on the table -->
+  <rect x="150" y="176" width="212" height="196" rx="20" fill="#FFFBF5"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="172" y="200" width="30" height="30" rx="8" fill="#F9E1DA" stroke="#AD3A26" stroke-width="6"/>
+    <path d="M178 216l7 7 12-15" stroke="#AD3A26" stroke-width="8"/>
+    <path d="M220 215h122" stroke="#CDBFB2" stroke-width="10"/>
+    <rect x="172" y="252" width="30" height="30" rx="8" fill="#F9E1DA" stroke="#AD3A26" stroke-width="6"/>
+    <path d="M178 268l7 7 12-15" stroke="#AD3A26" stroke-width="8"/>
+    <path d="M220 267h96" stroke="#CDBFB2" stroke-width="10"/>
+    <rect x="172" y="304" width="30" height="30" rx="8" fill="#FFFBF5" stroke="#CDBFB2" stroke-width="6"/>
+    <path d="M220 319h110" stroke="#CDBFB2" stroke-width="10"/>
+  </g>
+</svg>

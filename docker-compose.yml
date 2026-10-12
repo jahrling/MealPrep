@@ -16,6 +16,9 @@ services:
     env_file:
       - path: ${DINNERTABLE_ENV_FILE:-/etc/dinnertable.env}
         required: false
+    # Lets OLLAMA_URL=http://host.docker.internal:11434 reach Ollama on the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - dinnertable-data:/data
 
