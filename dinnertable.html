@@ -90,6 +90,13 @@ h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0;letter-spacing:-.
 .chip.shortcut{background:var(--gold-soft);color:var(--gold)}
 .chip.newf{background:var(--berry-soft);color:var(--berry)}
 .chip svg{width:12px;height:12px}
+a.chip{text-decoration:none}
+.thumbs{display:flex;flex-wrap:wrap;gap:8px}
+.thumb{position:relative}
+.thumb img{width:64px;height:64px;object-fit:cover;border-radius:8px;display:block;background:var(--surface-2)}
+.thumb .x{position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:999px;background:var(--surface);border:1px solid var(--line);font-size:14px;line-height:1;padding:0}
+.or{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--ink-2)}
+.or::before,.or::after{content:"";flex:1;border-top:1px solid var(--line)}
 .vp{font-size:12.5px;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* sections */
@@ -224,6 +231,7 @@ label.inline input{width:18px;height:18px;accent-color:var(--accent)}
 <div id="sheet"></div>
 <div id="toast" class="toast" hidden></div>
 <input type="file" id="photoCam" accept="image/*" capture="environment" hidden><input type="file" id="photoLib" accept="image/*" hidden>
+<input type="file" id="recCam" accept="image/*" capture="environment" hidden><input type="file" id="recLib" accept="image/*" multiple hidden>
 
 <script>
 (function(){
@@ -299,6 +307,8 @@ function normVersion(v){
     ingredients:(Array.isArray(v.ingredients)?v.ingredients:[]).filter(x=>x&&x.name).map(x=>({name:String(x.name),amt:(x.amt===null||x.amt===undefined||x.amt===''||isNaN(Number(x.amt)))?null:Number(x.amt),unit:String(x.unit||''),aisle:AISLES.includes(x.aisle)?x.aisle:guessAisle(x.name)})),
     steps:(Array.isArray(v.steps)?v.steps:[]).map(String).filter(Boolean)};
 }
+const safeUrl=u=>{u=String(u||'').trim();return /^https?:\/\/\S+$/i.test(u)?u:''};
+const IMPORTED=['web','photo','text'];
 function normRecipe(r){
   r=r&&typeof r==='object'?r:{};
   const out={name:String(r.name||'Untitled dinner'),blurb:String(r.blurb||''),protein:String(r.protein||''),
@@ -307,7 +317,7 @@ function normRecipe(r){
     nutrition:r.nutrition&&typeof r.nutrition==='object'?{cal:Number(r.nutrition.cal)||0,protein:Number(r.nutrition.protein)||0,fiber:Number(r.nutrition.fiber)||0}:null,
     rating:normRating(r.rating),
     adjustments:(Array.isArray(r.adjustments)?r.adjustments:[]).filter(a=>a&&a.note).map(a=>({at:Number(a.at)||0,note:String(a.note),summary:String(a.summary||''),prev:a.prev&&typeof a.prev==='object'?a.prev:null})),
-    source:String(r.source||'ai'),created:Number(r.created)||Date.now()};
+    source:String(r.source||'ai'),sourceName:String(r.sourceName||''),sourceUrl:safeUrl(r.sourceUrl),created:Number(r.created)||Date.now()};
   if(!out.scratch.ingredients.length&&out.shortcut.ingredients.length)out.scratch=clone(out.shortcut);
   if(!out.shortcut.ingredients.length&&out.scratch.ingredients.length)out.shortcut=clone(out.scratch);
   return out;
@@ -321,7 +331,8 @@ const S={tab:'week',weekKey:weekKeyOf(new Date()),recipes:{},recipesLoaded:false
   plan:{days:{},notes:''},shop:{have:{},got:{},extras:[]},pantry:{items:[]},inv:{items:[]},settings:{servings:4},
   scan:{mode:'pkg',dateFor:null,queue:[],jobs:[],working:false,seq:0,loc:LOCATIONS[0],shelf:''},imgLimit:null,
   shopView:'list',rq:'',rfilter:'all',sheet:null,db:null,sample:null,dbState:'loading',readOnly:false,
-  ai:{busy:null,msg:'',results:[],newOK:true,fridge:'',create:''},deferred:false};
+  ai:{busy:null,msg:'',results:[],newOK:true,fridge:'',create:''},
+  imp:{url:'',cite:'',text:'',paste:false,photos:[]},deferred:false};
 let ctl=null,unsubPlan=null,unsubShop=null;
 
 /* ---------- saving ---------- */
@@ -434,6 +445,8 @@ function finishOut(id){
 function toast(msg){const t=$('#toast');t.textContent=msg;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>t.hidden=true,2600)}
 const modeChip=m=>m==='scratch'?`<span class="chip scratch">${I.leaf}Scratch</span>`:`<span class="chip shortcut">${I.bolt}Shortcut</span>`;
 const newChip=r=>r.newFlavor?'<span class="chip newf">New flavor</span>':'';
+const srcChip=r=>{const n=r.sourceName||(r.sourceUrl?'the web':'');if(!n)return '';const u=safeUrl(r.sourceUrl);
+  return u?`<a class="chip" href="${esc(u)}" target="_blank" rel="noopener noreferrer">From ${esc(n)} ↗</a>`:`<span class="chip">From ${esc(n)}</span>`};
 const vp=r=>`<div class="vp">${esc(r.protein)}${r.veg.length?' · '+esc(r.veg.join(', ')):''}</div>`;
 const dots='<span class="dots"><i></i><i></i><i></i></span>';
 
@@ -498,6 +511,7 @@ function filteredRecipes(){
     if(S.rfilter==='new')return r.newFlavor;
     if(S.rfilter==='quick')return ver(r,'shortcut').time<=30;
     if(S.rfilter==='ai')return r.source==='ai';
+    if(S.rfilter==='imp')return IMPORTED.includes(r.source);
     return true;
   }).sort((a,b)=>ratingAvg(b[1])-ratingAvg(a[1])||a[1].name.localeCompare(b[1].name));
 }
@@ -506,13 +520,28 @@ function recipeListHTML(list,action){
   return list.map(([id,r])=>{const n=ratingCount(r);return `<button class="rcard" data-a="${action}" data-id="${esc(id)}"><div class="row"><span class="rn grow">${esc(r.name)}</span>${n?`<span class="votes num">★${ratingAvg(r).toFixed(1)} (${n})</span>`:''}</div>${r.blurb?`<div class="rb">${esc(r.blurb)}</div>`:''}<div class="chips"><span class="chip scratch num">${I.leaf}${r.scratch.time} min</span><span class="chip shortcut num">${I.bolt}${r.shortcut.time} min</span>${newChip(r)}</div>${vp(r)}</button>`}).join('');
 }
 function viewRecipes(){
-  const fs=[['all','All'],['fav','Family favorites'],['quick','Shortcut ≤30 min'],['new','New flavors'],['ai','Made with AI']];
+  const fs=[['all','All'],['fav','Family favorites'],['quick','Shortcut ≤30 min'],['new','New flavors'],['imp','Imported'],['ai','Made with AI']];
   let h=`<input type="search" id="rq" data-bind="rq" placeholder="Search chicken, broccoli, tacos…" value="${esc(S.rq)}" aria-label="Search recipes">`;
   h+=`<div class="filters">${fs.map(([k,l])=>`<button class="fchip${S.rfilter===k?' on':''}" data-a="rf" data-v="${k}">${l}</button>`).join('')}</div>`;
   if(!S.recipesLoaded&&S.dbState==='loading')return h+'<div class="empty">Loading recipes…</div>';
   h+=`<div class="rlist" id="rlist">${recipeListHTML(filteredRecipes(),'openrec')}</div>`;
   h+=`<button class="btn" style="width:100%;margin-top:12px" data-a="tab" data-v="ideas">${I.spark} Create a new recipe with AI</button>`;
-  return h;
+  return h+viewImport();
+}
+function viewImport(){
+  const m=S.imp,A=S.ai,dis=A.busy||!S.sample?'disabled':'',max=(S.imgLimit&&S.imgLimit.images&&S.imgLimit.images.maxCount)||5;
+  const st=A.busy==='import'?`<div class="status">${dots}<span class="grow">${esc(A.msg)}</span><button class="btn small" data-a="stop">Stop</button></div>`:(A.lastKey==='import'&&A.msg?`<div class="status">${esc(A.msg)}</div>`:'');
+  let h=`<div class="idea" style="margin-top:14px"><h3>Import a recipe</h3><p>Paste a link to a recipe page, or snap the cookbook page or screenshots of a post. Claude keeps the original as the from-scratch version and adds a shortcut version.</p>`;
+  h+=`<div class="addrow"><input type="text" inputmode="url" autocomplete="off" data-bind="imp.url" value="${esc(m.url)}" placeholder="https://cooking.nytimes.com/recipes/…" aria-label="Recipe link"><button class="btn primary" data-a="impurl" ${dis}>Get recipe</button></div>`;
+  if(m.paste)h+=`<textarea data-bind="imp.text" placeholder="Paste the ingredients and steps from the page" aria-label="Recipe text">${esc(m.text)}</textarea><button class="btn primary" data-a="imptext" ${dis}>Use this text</button>`;
+  else h+=`<button class="btn ghost small" style="align-self:flex-start" data-a="imppaste">Site won't load? Paste the recipe text</button>`;
+  h+=`<div class="or">or from photos</div>`;
+  if(m.photos.length)h+=`<div class="thumbs">${m.photos.map((ph,i)=>`<div class="thumb"><img src="${ph.url}" alt="Photo ${i+1}"><button class="x" data-a="impdel" data-i="${i}" aria-label="Remove photo ${i+1}">×</button></div>`).join('')}</div>`;
+  h+=`<div class="btnrow"><button class="btn grow" data-a="impcam" ${m.photos.length>=max?'disabled':''}>Snap a page</button><button class="btn grow" data-a="implib" ${m.photos.length>=max?'disabled':''}>From photos</button></div>`;
+  if(m.photos.length)h+=`<button class="btn primary" data-a="impphotos" ${dis}>Read recipe from ${m.photos.length} photo${m.photos.length===1?'':'s'}</button>`;
+  h+=`<p class="muted" style="font-size:13px">Up to ${max} photos, in order. Screenshots from Instagram or a video work too.</p>`;
+  h+=`<input type="text" data-bind="imp.cite" value="${esc(m.cite)}" placeholder="Where's it from? Cookbook, show, @account (optional)" aria-label="Recipe source">`;
+  return h+st+'</div>';
 }
 
 /* ---------- SHOP ---------- */
@@ -600,7 +629,7 @@ function viewIdeas(){
 /* ---------- SHEETS ---------- */
 function recipeDetail(r,o){
   const v=ver(r,o.mode),f=o.servings/(r.servings||4);
-  let h=`<div class="chips">${newChip(r)}${r.source==='ai'?'<span class="chip">Made with AI</span>':''}</div>`;
+  let h=`<div class="chips">${newChip(r)}${r.source==='ai'?'<span class="chip">Made with AI</span>':''}${srcChip(r)}</div>`;
   if(r.blurb)h+=`<p style="margin:0" class="muted">${esc(r.blurb)}</p>`;
   h+=`<div class="seg"><button class="${o.mode==='scratch'?'on':''}" data-a="smode" data-v="scratch">From scratch · <span class="num">${r.scratch.time}</span> min</button><button class="${o.mode==='shortcut'?'on':''}" data-a="smode" data-v="shortcut">Shortcut · <span class="num">${r.shortcut.time}</span> min</button></div>`;
   h+=`<div class="meta"><span>Protein <b>${esc(r.protein)}</b></span>${r.veg.length?`<span>Veggies <b>${esc(r.veg.join(', '))}</b></span>`:''}</div>`;
@@ -658,6 +687,7 @@ function renderSheet(){
     body+=`<div><div class="eyebrow" style="margin-bottom:6px">How did everyone like it?</div><div class="stack">${PEOPLE.map(p=>{const pr=r.rating[p];const stars=[1,2,3,4,5].map(n=>`<button class="starbtn${n<=pr.stars?' on':''}" data-a="rate" data-person="${p}" data-v="${n}" aria-label="${p}: rate ${n} star${n===1?'':'s'}">${n<=pr.stars?'★':'☆'}</button>`).join('');
       return `<div class="rating-row"><div class="row"><span class="grow" style="font-weight:600">${esc(p)}</span><span class="row" style="gap:1px">${stars}</span></div><input type="text" data-bind="note:${p}" placeholder="${esc(p)}'s notes (optional)" value="${esc(pr.note)}"></div>`;
     }).join('')}</div></div>`;
+    if(r.source!=='ai'||r.sourceName||r.sourceUrl)body+=`<div><div class="eyebrow" style="margin-bottom:6px">Source</div><div class="stack" style="gap:6px"><input type="text" data-bind="src:sourceName" value="${esc(r.sourceName)}" placeholder="Website, cookbook, show or @account" aria-label="Source name"><input type="text" inputmode="url" data-bind="src:sourceUrl" value="${esc(r.sourceUrl)}" placeholder="Link (optional)" aria-label="Source link"></div></div>`;
     const adjBusy=S.ai.busy==='adjust';
     body+=`<div><div class="eyebrow" style="margin-bottom:6px">Cooking notes</div><p class="muted" style="margin:0 0 8px;font-size:13px">What would you change next time? Claude updates the recipe itself and logs your note. This is separate from the ratings above.</p><textarea id="adjnote" data-bind="adj" placeholder="Too salty, needed 10 more minutes in the oven, the boys wanted less spice…">${esc(sh.adj||'')}</textarea><button class="btn primary small" style="margin-top:8px" data-a="adjust" ${S.ai.busy||!S.sample?'disabled':''}>Adjust recipe with this note</button>${adjBusy?`<div class="status" style="margin-top:8px">${dots}<span class="grow">${esc(S.ai.msg)}</span><button class="btn small" data-a="stop">Stop</button></div>`:(S.ai.lastKey==='adjust'&&S.ai.msg?`<div class="status" style="margin-top:8px">${esc(S.ai.msg)}</div>`:'')}${r.adjustments.length?`<div class="stack" style="margin-top:10px">${r.adjustments.slice().reverse().map((a,i)=>`<div class="note"><span class="eyebrow">${esc(adjDate(a.at))}</span>${esc(a.note)}${a.summary?`<div class="muted" style="margin-top:4px">Changed: ${esc(a.summary)}</div>`:''}${i===0&&a.prev?`<button class="btn ghost small" style="margin-top:6px" data-a="adjundo" ${S.ai.busy?'disabled':''}>Undo this change</button>`:''}</div>`).join('')}</div>`:''}</div>`;
     body+=`<div><div class="eyebrow" style="margin-bottom:6px">Remix with AI</div><div class="btnrow">${[['faster','Make it faster'],['veg','Sneak in more veggies'],['kid','More kid-friendly'],['flavor','New flavor twist']].map(([k,l])=>`<button class="btn small" data-a="remix" data-v="${k}" ${S.ai.busy||!S.sample?'disabled':''}>${l}</button>`).join('')}</div>${S.ai.busy==='remix'?`<div class="status" style="margin-top:8px">${dots}<span class="grow">${esc(S.ai.msg)}</span><button class="btn small" data-a="stop">Stop</button></div>`:(S.ai.lastKey==='remix'&&S.ai.msg?`<div class="status" style="margin-top:8px">${esc(S.ai.msg)}</div>`:'')}</div>`;
@@ -722,7 +752,7 @@ async function aiPlan(){
       const d=Number(x.day);if(!open.includes(d)||S.plan.days[d])continue;
       const mode=x.mode==='scratch'?'scratch':'shortcut';
       let id=x.recipeId&&S.recipes[x.recipeId]?x.recipeId:null;
-      if(!id&&x.newRecipe&&newOK){id=await addRecipe(normRecipe({...x.newRecipe,source:'ai'}));if(id)made++}
+      if(!id&&x.newRecipe&&newOK){id=await addRecipe(normRecipe({...x.newRecipe,source:'ai',sourceName:'',sourceUrl:''}));if(id)made++}
       if(id){S.plan.days[d]={recipeId:id,mode,servings:null};n++}
     }
     savePlan();
@@ -736,7 +766,7 @@ async function aiRecipes(key,instruction,count){
   const signal=aiStart(key,count>1?'Coming up with ideas… usually under a minute.':'Writing your recipe… usually under a minute.');
   try{
     let out=await S.sample.json(prompt,{signal,cache:false});
-    const list=(Array.isArray(out)?out:[out]).filter(x=>x&&typeof x==='object'&&x.name).map(x=>normRecipe({...x,source:'ai'}));
+    const list=(Array.isArray(out)?out:[out]).filter(x=>x&&typeof x==='object'&&x.name).map(x=>normRecipe({...x,source:'ai',sourceName:'',sourceUrl:''}));
     if(!list.length)return aiEnd('Nothing usable came back. Try again.');
     S.ai.results=list.concat(S.ai.results).slice(0,12);
     aiEnd(`${list.length} new idea${list.length===1?'':'s'} below. Open one to save it.`);
@@ -752,6 +782,65 @@ async function saveRecipe(id){
   const r=S.recipes[id];if(!r)return;
   if(!S.db||S.readOnly)return;
   try{await S.db.doc('recipes/'+id).set(clone(r))}catch(e){writeErr(e)}
+}
+
+/* ---------- import ---------- */
+const IMPORT_RULES=`Convert the recipe below into that format.
+- "scratch" is the original recipe, kept faithful: every ingredient with its original amount, and every step in order (tighten the wording if you like, but don't drop anything). Use the original name, and the original number of servings instead of 4.
+- "shortcut" is your easier weeknight version of the same dish, as described above.
+- "blurb", "protein", "veg", "newFlavor", "kidTip", "prepAhead" and "nutrition" are yours to fill in for this family.
+- Add "sourceName": who the recipe comes from, such as the publication, website, cookbook, TV show or creator account ("NYT Cooking", "Smitten Kitchen", "@halfbakedharvest"), or "" if you can't tell.
+If there is no recipe here, reply with only {"error": "no recipe"}.`;
+async function importRecipe(material,images,src,signal){
+  const prompt=`You add recipes to a family's recipe box.\n${FAMILY}\n\n${SHAPE}\n\n${IMPORT_RULES}\n\n${material}\n\nReply with only one JSON recipe object.`;
+  let out=await S.sample.json(prompt,{images,signal,cache:false});
+  if(Array.isArray(out))out=out[0];
+  if(!out||typeof out!=='object'||!out.name||out.error)return false;
+  const r=normRecipe({...out,...src,sourceName:S.imp.cite.trim()||String(out.sourceName||'')||src.sourceName||''});
+  if(!r.scratch.ingredients.length)return false;
+  S.ai.results=[r].concat(S.ai.results).slice(0,12);
+  S.sheet={type:'preview',i:0,mode:'scratch',servings:r.servings};
+  impReset();aiEnd(`Imported "${r.name}". If you closed it before saving, it's waiting in Ideas.`);return true;
+}
+function hostOf(u){try{return u?new URL(u).hostname.replace(/^www\./,''):''}catch(e){return ''}}
+function impReset(){const m=S.imp;m.photos.forEach(ph=>{try{URL.revokeObjectURL(ph.url)}catch(x){}});S.imp={url:'',cite:'',text:'',paste:false,photos:[]}}
+async function impUrl(){
+  const url=S.imp.url.trim();
+  if(!/^https?:\/\//i.test(url)){toast('Paste a full link starting with https://');return}
+  const signal=aiStart('import','Reading the page…');
+  try{
+    let page;
+    try{const res=await fetch('/api/fetch-page',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url}),signal});page=await res.json()}
+    catch(e){if(e.name==='AbortError')return aiEnd('Stopped.');throw e}
+    if(!page||page.error){S.imp.paste=true;return aiEnd(((page&&page.error)||"Couldn't load that page.")+' Paste the recipe text below, or try screenshots.')}
+    const p=page.result;
+    if(!p.recipe&&!(p.text||'').trim()){S.imp.paste=true;return aiEnd("That page didn't include the recipe text. Paste it below, or try screenshots.")}
+    const src={source:'web',sourceUrl:p.url||url,sourceName:p.site||''};
+    const head=`From ${p.site||'a web page'}${p.title?`, "${p.title}"`:''}${p.author?` by ${p.author}`:''}.`;
+    const material=p.recipe?`${head} The page's structured recipe data:\n${JSON.stringify(p.recipe)}`:`${head} The page's text:\n${p.text}`;
+    S.ai.msg='Turning it into a recipe card… usually under a minute.';render(true);
+    if(!await importRecipe(material,null,src,signal)){S.imp.paste=true;aiEnd("Couldn't find a recipe on that page. Paste the recipe text below, or try screenshots.")}
+  }catch(e){aiErr(e)}
+}
+async function impText(){
+  const text=S.imp.text.trim();if(!text){toast('Paste the recipe text first.');return}
+  const signal=aiStart('import','Turning it into a recipe card… usually under a minute.');
+  const url=safeUrl(S.imp.url);
+  try{if(!await importRecipe(`The recipe, pasted by the cook${url?` from ${url}`:''}:\n${text}`,null,{source:url?'web':'text',sourceUrl:url,sourceName:hostOf(url)},signal))aiEnd("That text doesn't look like a recipe. Include the ingredients and steps.")}
+  catch(e){aiErr(e)}
+}
+async function impPhotos(){
+  const ph=S.imp.photos;if(!ph.length)return;
+  const signal=aiStart('import',`Reading ${ph.length} photo${ph.length===1?'':'s'}… this can take a minute.`);
+  try{if(!await importRecipe(`The recipe is in the attached photo${ph.length===1?'':'s'}: a cookbook page, recipe card, or ${ph.length>1?'a series of ':''}screenshots from a social media post or cooking video. Read ${ph.length>1?'across all of them in order':'it'}, including any printed or on-screen text naming the book, show or account.`,ph.map(x=>x.file),{source:'photo',sourceUrl:'',sourceName:''},signal))aiEnd("Couldn't read a recipe from those photos. Try closer, brighter shots of the ingredients and steps.")}
+  catch(e){aiErr(e)}
+}
+async function impAddFiles(files){
+  const max=(S.imgLimit&&S.imgLimit.images&&S.imgLimit.images.maxCount)||5;
+  let dropped=false;
+  for(const f of files){if(S.imp.photos.length>=max){dropped=true;break}const small=await shrink(f);if(S.imp.photos.length>=max){dropped=true;break}S.imp.photos.push({file:small,url:URL.createObjectURL(small)})}
+  if(dropped)toast(`Only ${max} photos fit in one import.`);
+  render(true);
 }
 
 const DATE_RULES=`in YYYY-MM-DD form (assume the next occurrence when the year is missing, and use the last day of the month when only a month is printed). Never guess a date that isn't printed.`;
@@ -876,7 +965,7 @@ const A={
     S.recipes[id]=restored;S.ai.msg='';saveRecipe(id);render(true);toast('Change undone');
   },
   remix:t=>{const r=S.recipes[S.sheet.id];if(!r)return;const goal={faster:'faster for a busy weeknight, with a shortcut version under 25 minutes',veg:'packed with more vegetables, some hidden and some visible, while staying kid-friendly',kid:'more kid-friendly for picky days, with familiar textures and a dip or build-your-own element',flavor:'a gentle new-flavor twist (a different cuisine or spice profile) that is still mild enough for a 2-year-old'}[t.dataset.v];
-    const base=clone(r);delete base.rating;delete base.adjustments;delete base.source;delete base.created;
+    const base=clone(r);delete base.rating;delete base.adjustments;delete base.source;delete base.sourceName;delete base.sourceUrl;delete base.created;
     aiRecipes('remix',`Here is a saved recipe as JSON:\n${JSON.stringify(base)}\n\nRework it to be ${goal}. Keep what makes it appealing to the kids. Give it a new name.`,1)},
   goplan:()=>{S.tab='ideas';render(true);aiPlan()},
   clearweek:()=>{S.confirmClear=true;render(true)},
@@ -902,6 +991,13 @@ const A={
   aifridge:()=>{const v=(S.ai.fridge||'').trim();if(!v){toast('List a few things you have first.');return $('#fridge').focus()}aiRecipes('fridge',`Suggest 3 different dinners that mostly use what they already have: ${v}. It's fine to add a few common items. Make at least one a shortcut-friendly weeknight meal and one a gentle new flavor.`,3)},
   aicreate:()=>{const v=(S.ai.create||'').trim();if(!v){toast('Describe the dinner you want first.');return $('#create').focus()}aiRecipes('create',`Create one recipe for this request: ${v}`,1)},
   stop:()=>{if(ctl)ctl.abort()},
+  impurl:()=>impUrl(),
+  imptext:()=>impText(),
+  impphotos:()=>impPhotos(),
+  imppaste:()=>{S.imp.paste=true;render(true)},
+  impcam:()=>{const p=$('#recCam');p.value='';p.click()},
+  implib:()=>{const p=$('#recLib');p.value='';p.click()},
+  impdel:t=>{const ph=S.imp.photos.splice(Number(t.dataset.i),1)[0];if(ph)try{URL.revokeObjectURL(ph.url)}catch(x){}render(true)},
   phcam:()=>pickPhoto('pkg',false),
   phlib:()=>pickPhoto('pkg',true),
   qdate:t=>pickPhoto('date',false,t.dataset.id),
@@ -947,6 +1043,10 @@ document.addEventListener('input',ev=>{
   else if(b==='adj'){if(S.sheet)S.sheet.adj=t.value}
   else if(b==='ai.fridge')S.ai.fridge=t.value;
   else if(b==='ai.create')S.ai.create=t.value;
+  else if(b.startsWith('imp.'))S.imp[b.slice(4)]=t.value;
+  else if(b.startsWith('src:')){const k=b.slice(4),id=S.sheet&&S.sheet.id,r=id&&S.recipes[id];if(!r)return;let v=t.value.trim();const tk=id+':'+k;clearTimeout(noteTimers[tk]);
+    // Apply in the timer: a snapshot poll may have replaced the recipe object meanwhile.
+    noteTimers[tk]=setTimeout(()=>{const cur=S.recipes[id];if(!cur)return;if(k==='sourceUrl')v=safeUrl(v&&!/^[a-z][\w+.-]*:/i.test(v)?'https://'+v:v);cur[k]=v;saveRecipe(id)},600)}
   else if(b==='scan.loc')S.scan.loc=t.value;
   else if(b==='scan.shelf')S.scan.shelf=t.value;
   else if(b.startsWith('q:')){const [,id,k]=b.split(':'),e=S.scan.queue.find(q=>q.id===id);if(!e)return;e[k]=t.value;
@@ -958,9 +1058,11 @@ document.addEventListener('keydown',ev=>{
   if(ev.key==='Escape'&&S.sheet){S.sheet=null;render(true)}
   if(ev.key==='Enter'&&ev.target.id==='extraName'){ev.preventDefault();A.extra()}
   if(ev.key==='Enter'&&ev.target.id==='pName'){ev.preventDefault();A.padd()}
+  if(ev.key==='Enter'&&ev.target.dataset&&ev.target.dataset.bind==='imp.url'&&!S.ai.busy){ev.preventDefault();impUrl()}
 });
 document.addEventListener('focusout',()=>setTimeout(()=>{if(S.deferred)render()},0));
-document.addEventListener('change',ev=>{const id=ev.target.id;if((id==='photoCam'||id==='photoLib')&&ev.target.files&&ev.target.files.length)onPhoto(ev.target.files[0])});
+document.addEventListener('change',ev=>{const id=ev.target.id;if((id==='photoCam'||id==='photoLib')&&ev.target.files&&ev.target.files.length)onPhoto(ev.target.files[0]);
+  if((id==='recCam'||id==='recLib')&&ev.target.files&&ev.target.files.length)impAddFiles(ev.target.files)});
 
 /* ---------- standalone backend shim ----------
    Talks to server.py over /api/*, standing in for the Claude Artifact
