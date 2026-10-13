@@ -306,10 +306,22 @@ function normRating(v){
 }
 function ratingAvg(r){const vals=PEOPLE.map(p=>r.rating[p].stars).filter(v=>v>0);return vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:0}
 function ratingCount(r){return PEOPLE.filter(p=>r.rating[p].stars>0).length}
+// Amounts sometimes come back as text: "1/3", "1 1/2", "½", "1½", "2-3" (first number of a range wins).
+const VULGAR={'¼':.25,'½':.5,'¾':.75,'⅓':1/3,'⅔':2/3,'⅛':.125,'⅜':.375,'⅝':.625,'⅞':.875,'⅕':.2,'⅖':.4,'⅗':.6,'⅘':.8,'⅙':1/6,'⅚':5/6};
+function parseAmt(a){
+  if(typeof a==='number')return isFinite(a)?a:null;
+  if(typeof a!=='string')return null;
+  const s=a.trim().replace(/[⁄∕]/g,'/');let m,n=null;
+  if(m=s.match(/^(\d+)[\s-]+(\d+)\/(\d+)/))n=Number(m[1])+Number(m[2])/Number(m[3]);
+  else if(m=s.match(/^(\d+)\/(\d+)/))n=Number(m[1])/Number(m[2]);
+  else if(m=s.match(/^(\d*\.?\d+)?[\s-]*([¼½¾⅓⅔⅛⅜⅝⅞⅕⅖⅗⅘⅙⅚])/))n=Number(m[1]||0)+VULGAR[m[2]];
+  else if(m=s.match(/^\d*\.?\d+/))n=Number(m[0]);
+  return n!=null&&isFinite(n)?n:null;
+}
 function normVersion(v){
   v=v&&typeof v==='object'?v:{};
   return {time:Number(v.time)||0,
-    ingredients:(Array.isArray(v.ingredients)?v.ingredients:[]).filter(x=>x&&x.name).map(x=>({name:String(x.name),amt:(x.amt===null||x.amt===undefined||x.amt===''||isNaN(Number(x.amt)))?null:Number(x.amt),unit:String(x.unit||''),aisle:AISLES.includes(x.aisle)?x.aisle:guessAisle(x.name)})),
+    ingredients:(Array.isArray(v.ingredients)?v.ingredients:[]).filter(x=>x&&x.name).map(x=>({name:String(x.name),amt:parseAmt(x.amt),unit:String(x.unit||''),aisle:AISLES.includes(x.aisle)?x.aisle:guessAisle(x.name)})),
     steps:(Array.isArray(v.steps)?v.steps:[]).map(String).filter(Boolean)};
 }
 const safeUrl=u=>{u=String(u||'').trim();return /^https?:\/\/\S+$/i.test(u)?u:''};
@@ -755,7 +767,7 @@ const SHAPE=`Each recipe is a JSON object with exactly these fields:
 "kidTip": one practical sentence on serving it to a 2-year-old and a 6-year-old (safe cuts for the toddler, deconstructed plates, dips),
 "prepAhead": one sentence on what can be done on Sunday, or "",
 "servings": 4,
-"scratch": {"time": total minutes, "ingredients": [{"name": plain grocery name, "amt": number or null, "unit": string like "cup", "tbsp", "lb", "" for whole items, "aisle": one of ${JSON.stringify(AISLES)}}], "steps": [short plain steps]},
+"scratch": {"time": total minutes, "ingredients": [{"name": plain grocery name, "amt": a plain decimal number such as 0.33 or 1.5 (never a fraction string like "1/3"), or null only when the recipe gives no amount, "unit": string like "cup", "tbsp", "lb", "" for whole items, "aisle": one of ${JSON.stringify(AISLES)}}], "steps": [short plain steps]},
 "shortcut": same shape as scratch, but using store-bought helpers where they save real time: rotisserie chicken, taco or ranch seasoning packets instead of separate spices, frozen or pre-cut vegetables, jarred sauces, microwave rice, refrigerated dough, bagged salad kits,
 "nutrition": {"cal": number, "protein": grams, "fiber": grams} per serving, estimated}
 Ingredient names never contain quantities. List oil, salt and spices as ingredients. Keep steps short and plain.`;
@@ -1014,7 +1026,7 @@ const A={
     const note=(S.sheet.adj||'').trim();if(!note){S.ai.lastKey='adjust';return aiEnd('Write a note first.')}
     const base=clone(r);['rating','adjustments','source','created'].forEach(k=>delete base[k]);
     const past=r.adjustments.map(a=>`- ${adjDate(a.at)}: ${a.note}`).join('\n');
-    const prompt=`You adjust a family's saved dinner recipe using notes from actually cooking it.\n${FAMILY}\n\nCurrent recipe as JSON:\n${JSON.stringify(base)}\n\n${past?`Earlier cooking notes, already applied (keep those improvements unless the new note contradicts them):\n${past}\n\n`:''}New note from the cook: "${note}"\n\nUpdate the recipe so it goes better next time. Change only what the note calls for and keep everything else as is; if the note only concerns one version (scratch or shortcut), leave the other unchanged. Adjust times, amounts and steps as needed, and keep the ingredient shape: {"name": plain grocery name, "amt": number or null, "unit": string, "aisle": one of ${JSON.stringify(AISLES)}}.\nReply with only JSON: {"summary": one or two plain sentences on what you changed and why, "scratch": {"time": minutes, "ingredients": [...], "steps": [...]}, "shortcut": same shape, "kidTip": string, "prepAhead": string, "nutrition": {"cal": number, "protein": grams, "fiber": grams}}`;
+    const prompt=`You adjust a family's saved dinner recipe using notes from actually cooking it.\n${FAMILY}\n\nCurrent recipe as JSON:\n${JSON.stringify(base)}\n\n${past?`Earlier cooking notes, already applied (keep those improvements unless the new note contradicts them):\n${past}\n\n`:''}New note from the cook: "${note}"\n\nUpdate the recipe so it goes better next time. Change only what the note calls for and keep everything else as is; if the note only concerns one version (scratch or shortcut), leave the other unchanged. Adjust times, amounts and steps as needed, and keep the ingredient shape: {"name": plain grocery name, "amt": a plain decimal number such as 0.33 (never a fraction string like "1/3") or null, "unit": string, "aisle": one of ${JSON.stringify(AISLES)}}.\nReply with only JSON: {"summary": one or two plain sentences on what you changed and why, "scratch": {"time": minutes, "ingredients": [...], "steps": [...]}, "shortcut": same shape, "kidTip": string, "prepAhead": string, "nutrition": {"cal": number, "protein": grams, "fiber": grams}}`;
     const signal=aiStart('adjust','Adjusting the recipe… usually under a minute.');
     try{
       const out=await S.sample.json(prompt,{signal,cache:false});
